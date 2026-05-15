@@ -1,7 +1,7 @@
 {
-  "name": "localbiz-enricher-proto",
+  "name": "data_capture_tool",
   "version": "0.1.0",
-  "description": "Local business enrichment prototype using Playwright + Qwen",
+  "description": "Data_Capture_Tool: local business enrichment using Playwright + Qwen",
   "type": "module",
   "scripts": {
     "dev": "node --watch src/index.js",

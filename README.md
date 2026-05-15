@@ -1,4 +1,4 @@
-# LocalBiz Enricher Prototype (Node.js)
+# Data_Capture_Tool (Node.js)
 
 Prototype REST API + UI to enrich local business data using:
 - Playwright (headed browser)
@@ -76,7 +76,7 @@ Notes:
 ## Deploy On Model Server (One-Liner)
 1. Clone + install + run (single command):
 ```bash
-git clone <YOUR_GITHUB_REPO_URL> localbiz-enricher-proto && cd localbiz-enricher-proto && bash scripts/install-run.sh 8787
+git clone <YOUR_GITHUB_REPO_URL> data_capture_tool && cd data_capture_tool && bash scripts/install-run.sh 8787
 ```
 
 2. Open:
@@ -89,7 +89,7 @@ If this folder is not yet a git repo:
 ```bash
 git init
 git add .
-git commit -m "Initial commit: LocalBiz enricher with public dynamic API"
+git commit -m "Initial commit: Data_Capture_Tool with public dynamic API"
 git branch -M main
 git remote add origin <YOUR_GITHUB_REPO_URL>
 git push -u origin main

@@ -35,7 +35,7 @@ let enrichmentFieldsState = [];
 let inputFieldsState = [];
 let inputValuesState = {};
 let modelNameSuggestionsState = [];
-const LAST_INPUT_STORAGE_KEY = "localbiz_enricher_last_input_v1";
+const LAST_INPUT_STORAGE_KEY = "data_capture_tool_last_input_v1";
 
 const settingsFields = [
   "modelApiBaseUrl",

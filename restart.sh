@@ -18,7 +18,7 @@ if (( PORT_VALUE < 1 || PORT_VALUE > 65535 )); then
   exit 1
 fi
 
-echo "Restarting localbiz-enricher-proto on port $PORT_VALUE"
+echo "Restarting Data_Capture_Tool on port $PORT_VALUE"
 
 # Stop previous process tracked by PID file
 if [[ -f "$PID_FILE" ]]; then

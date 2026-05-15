@@ -42,7 +42,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   allowedSources: ["company_site", "google_maps", "yelp", "linkedin", "bbb"]
 });
 
-const SETTINGS_KEY = "enricher_settings";
+const SETTINGS_KEY = "data_capture_tool_settings";
 
 export function getDefaultSettings() {
   return {

@@ -175,7 +175,7 @@ function buildOpenApiDocument({ settings, req }) {
   return {
     openapi: "3.0.3",
     info: {
-      title: "LocalBiz Enricher Public API",
+      title: "Data_Capture_Tool Public API",
       version: "1.0.0",
       description:
         "Dynamic enrichment API. Request/response schemas are generated from current Input Fields and Enrichment Fields."
@@ -645,7 +645,7 @@ app.get("/api/public/docs", async (req, res) => {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LocalBiz Enricher Public API Docs</title>
+  <title>Data_Capture_Tool Public API Docs</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 16px; color: #1f2733; }
     code, pre { background: #f3f4f6; padding: 2px 6px; border-radius: 6px; }
@@ -656,7 +656,7 @@ app.get("/api/public/docs", async (req, res) => {
   </style>
 </head>
 <body>
-  <h1>LocalBiz Enricher Public API</h1>
+  <h1>Data_Capture_Tool Public API</h1>
   <p>OpenAPI JSON: <a href="${openApiUrl}">${openApiUrl}</a></p>
   <p>Authentication: send API key via <code>x-api-key</code> header (or <code>Authorization: Bearer &lt;key&gt;</code>).</p>
   <h2>Endpoints</h2>
@@ -749,7 +749,7 @@ const port = Number(process.env.PORT || 8787);
 async function start() {
   await ensureDatabaseSchema();
   app.listen(port, () => {
-    console.log(`localbiz-enricher-proto listening on http://localhost:${port}`);
+    console.log(`Data_Capture_Tool listening on http://localhost:${port}`);
   });
 }
 
