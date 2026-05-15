@@ -1,0 +1,23 @@
+{
+  "name": "localbiz-enricher-proto",
+  "version": "0.1.0",
+  "description": "Local business enrichment prototype using Playwright + Qwen",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "install:run": "bash scripts/install-run.sh",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev --name init"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.8.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "playwright": "^1.53.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "prisma": "^6.8.2"
+  }
+}

@@ -1,0 +1,52 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model EnrichmentRun {
+  id                   Int        @id @default(autoincrement())
+  cacheKey             String
+  company              String
+  city                 String
+  state                String
+  website              String?
+  status               String
+  usedCache            Boolean    @default(false)
+  requestPayloadJson   String
+  resultJson           String
+  confidenceOwner      Float?
+  confidenceCompetitor Float?
+  confidenceService    Float?
+  overallConfidence    Float?
+  errorMessage         String?
+  startedAt            DateTime
+  completedAt          DateTime?
+  createdAt            DateTime   @default(now())
+  evidences            Evidence[]
+
+  @@index([cacheKey])
+}
+
+model Evidence {
+  id          Int           @id @default(autoincrement())
+  runId       Int
+  sourceType  String
+  url         String
+  snippet     String
+  field       String?
+  confidence  Float?
+  createdAt   DateTime      @default(now())
+  run         EnrichmentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+}
+
+model AppSetting {
+  key       String   @id
+  valueJson String
+  updatedAt DateTime @updatedAt
+}

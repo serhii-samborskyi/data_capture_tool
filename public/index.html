@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LocalBiz Enricher Prototype</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="bg-shape bg-a"></div>
+    <div class="bg-shape bg-b"></div>
+
+    <main class="layout">
+      <header class="hero">
+        <h1>Local Business Data Enricher</h1>
+        <p>Playwright + Qwen 3.5 35B prototype with evidence, cache, and proxy controls.</p>
+      </header>
+
+      <section class="panel">
+        <h2>Enrichment Input</h2>
+        <form id="enrichForm" class="grid">
+          <div id="inputFieldsContainer" class="full-width grid"></div>
+          <div class="actions">
+            <button type="submit" id="runBtn">Run Enrichment</button>
+            <button type="button" id="sampleBtn" class="ghost">Run Sample</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Settings</h2>
+        <form id="settingsForm" class="grid">
+          <label>
+            Model API Base URL
+            <input id="modelApiBaseUrl" required />
+          </label>
+          <label>
+            Model Name
+            <select id="modelName" required>
+              <option value="">Select model from API...</option>
+            </select>
+            <div class="actions">
+              <button type="button" id="loadModelsBtn" class="ghost">Load Models</button>
+            </div>
+            <div id="modelNameStatus" class="meta"></div>
+          </label>
+          <label>
+            Model API Key (optional)
+            <input id="modelApiKey" placeholder="Bearer token value only" />
+          </label>
+          <label>
+            Model Basic Auth (optional)
+            <input id="modelBasicAuth" placeholder="username:password" />
+          </label>
+          <label class="full-width">
+            Public API Key (for /api/public/*)
+            <input id="publicApiKey" placeholder="Set a strong API key for CRM integrations" />
+          </label>
+          <label>
+            Confidence Threshold (0..1)
+            <input id="confidenceThreshold" type="number" step="0.01" min="0" max="1" />
+          </label>
+          <label>
+            Owner Threshold (0..1)
+            <input id="ownerConfidenceThreshold" type="number" step="0.01" min="0" max="1" />
+          </label>
+          <label>
+            Request Timeout (ms)
+            <input id="requestTimeoutMs" type="number" min="10000" max="180000" />
+          </label>
+          <label>
+            Model Timeout (ms)
+            <input id="modelRequestTimeoutMs" type="number" min="10000" max="600000" />
+          </label>
+          <label>
+            Evidence Timeout (ms)
+            <input id="evidenceRequestTimeoutMs" type="number" min="5000" max="180000" />
+          </label>
+          <label class="checkbox-row">
+            <input id="modelDisableThinking" type="checkbox" />
+            Disable Model Thinking
+          </label>
+          <label>
+            Reasoning Effort
+            <select id="modelReasoningEffort">
+              <option value="none">none</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </label>
+          <label>
+            Owner Max Tokens
+            <input id="ownerMaxTokens" type="number" min="1" max="400" />
+          </label>
+          <label>
+            Field Probe Max Tokens
+            <input id="fieldProbeMaxTokens" type="number" min="1" max="600" />
+          </label>
+          <label>
+            Enrich Max Tokens
+            <input id="enrichMaxTokens" type="number" min="1" max="1200" />
+          </label>
+          <label>
+            Cache TTL (hours)
+            <input id="cacheTtlHours" type="number" min="1" max="168" />
+          </label>
+          <label>
+            Browser Max Uses Before Relaunch
+            <input id="browserMaxUses" type="number" min="1" max="100" />
+          </label>
+          <label>
+            Proxy Retry Count
+            <input id="proxyRetryCount" type="number" min="0" max="5" />
+          </label>
+          <label class="checkbox-row">
+            <input id="useCache" type="checkbox" />
+            Use Cache
+          </label>
+          <label class="checkbox-row">
+            <input id="googleSerpOnly" type="checkbox" />
+            Google SERP Only Mode
+          </label>
+          <label class="checkbox-row">
+            <input id="useBrightDataSerp" type="checkbox" />
+            Use Bright Data SERP API
+          </label>
+          <label>
+            Bright Data Zone
+            <input id="brightDataZone" placeholder="serp_api1" />
+          </label>
+          <label>
+            Bright Data Format
+            <input id="brightDataFormat" placeholder="raw" />
+          </label>
+          <label class="full-width">
+            Bright Data API Token
+            <input id="brightDataApiToken" placeholder="Bearer token value only" />
+          </label>
+          <label class="full-width">
+            Profile Query Templates (one per line)
+            <textarea id="profileSerpQueryTemplates" rows="3"></textarea>
+          </label>
+          <div class="full-width field-builder">
+            <div class="field-builder-head">
+              <h3>Input Fields</h3>
+              <button type="button" id="addInputFieldBtn" class="ghost">Add Input Field</button>
+            </div>
+            <p class="meta">
+              Add custom input variables used by queries and prompts.
+            </p>
+            <div id="inputFieldsSettingsList"></div>
+          </div>
+          <div class="full-width field-builder">
+            <div class="field-builder-head">
+              <h3>Enrichment Fields</h3>
+              <button type="button" id="addFieldBtn" class="ghost">Add Field</button>
+            </div>
+            <p class="meta">
+              Define field key, query templates, and prompt template. Use placeholders:
+              <code>${input.company}</code>, <code>${input.city}</code>, <code>${input.state}</code>,
+              <code>${input.website}</code>, <code>${evidenceLines}</code>.
+              You can also use custom input keys like <code>${input.zip_code}</code>.
+              Later fields can use earlier field values in templates, for example
+              <code>{{owner_name}}</code> in query templates and <code>${fields.owner_name}</code> in prompts.
+            </p>
+            <div id="enrichmentFieldsList"></div>
+            <div class="actions">
+              <button type="submit">Save Settings</button>
+            </div>
+          </div>
+          <label class="checkbox-row">
+            <input id="headed" type="checkbox" />
+            Headed Browser Mode
+          </label>
+          <label class="checkbox-row">
+            <input id="rotateProxyPerSite" type="checkbox" />
+            Rotate Proxy Per Site Attempt
+          </label>
+          <label class="full-width">
+            Proxy List (one per line, format: ip:port@user:pass)
+            <textarea id="proxyList" rows="5" placeholder="1.2.3.4:8080@user:pass"></textarea>
+          </label>
+          <div class="actions">
+            <button type="submit">Save Settings</button>
+          </div>
+          <div id="settingsStatus" class="meta"></div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Latest Result</h2>
+        <pre id="resultBox">No run yet.</pre>
+        <div id="metaBox" class="meta"></div>
+        <div class="progress-wrap">
+          <div id="runProgressBar" class="progress-bar"></div>
+        </div>
+        <div id="runProgressText" class="meta">Idle.</div>
+        <h3>Qwen Parsed (Run)</h3>
+        <pre id="runQwenParsedBox">No Qwen parsed output yet.</pre>
+        <h3>Qwen Raw (Run)</h3>
+        <pre id="runQwenRawBox">No Qwen raw output yet.</pre>
+        <pre id="runDebugBox">No run debug yet.</pre>
+      </section>
+
+      <section class="panel">
+        <h2>Compatibility Tests</h2>
+        <p class="meta">
+          Runs fast checks against current model settings to verify JSON behavior and schema
+          compliance.
+        </p>
+        <div class="actions">
+          <button type="button" id="modelCompatBtn">Run Model Compatibility Test</button>
+        </div>
+        <pre id="compatBox">No compatibility test run yet.</pre>
+      </section>
+
+      <section class="panel">
+        <h2>Field Debugger</h2>
+        <p class="meta">
+          Run one field probe and inspect Bright Data payload + exact prompt sent to Qwen.
+        </p>
+        <form id="fieldDebugForm" class="grid">
+          <label>
+            Field
+            <select id="debugField"></select>
+          </label>
+          <label class="full-width">
+            Query Template Override (optional)
+            <input
+              id="debugQueryTemplate"
+              placeholder="Owner of {{website}} {{city}} {{state}} linkedin"
+            />
+          </label>
+          <div class="actions">
+            <button type="submit" id="fieldDebugBtn">Run Field Probe</button>
+          </div>
+        </form>
+        <h3>Qwen Parsed (Field Probe)</h3>
+        <pre id="fieldQwenParsedBox">No Qwen parsed output yet.</pre>
+        <h3>Qwen Raw (Field Probe)</h3>
+        <pre id="fieldQwenRawBox">No Qwen raw output yet.</pre>
+        <pre id="fieldDebugBox">No field probe run yet.</pre>
+      </section>
+
+      <section class="panel">
+        <h2>Evidence</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>URL</th>
+                <th>Snippet</th>
+              </tr>
+            </thead>
+            <tbody id="evidenceBody">
+              <tr><td colspan="3">No evidence yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Recent Runs</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Business</th>
+                <th>Status</th>
+                <th>Result</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody id="runsBody">
+              <tr><td colspan="5">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
