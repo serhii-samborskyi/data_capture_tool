@@ -285,6 +285,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
+function getBrightDataToken(settings) {
+  return String(settings?.brightDataApiToken || "").trim();
+}
+
 function safeJsonParse(text) {
   try {
     return JSON.parse(String(text || ""));
@@ -384,7 +388,8 @@ function buildBrightDataEvidence({
 }
 
 async function fetchBrightDataRequestMode(searchUrl, settings, timeoutMs) {
-  if (!settings.brightDataApiToken) {
+  const token = getBrightDataToken(settings);
+  if (!token) {
     throw new Error("Bright Data API token is missing");
   }
 
@@ -396,7 +401,7 @@ async function fetchBrightDataRequestMode(searchUrl, settings, timeoutMs) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${settings.brightDataApiToken}`
+        Authorization: `Bearer ${token}`
       },
       body: JSON.stringify({
         zone: settings.brightDataZone || "serp_api1",
@@ -444,7 +449,8 @@ async function fetchBrightDataRequestMode(searchUrl, settings, timeoutMs) {
 }
 
 async function fetchBrightDataDatasetMode(searchUrl, plan, settings, timeoutMs, onProgress) {
-  if (!settings.brightDataApiToken) {
+  const token = getBrightDataToken(settings);
+  if (!token) {
     throw new Error("Bright Data API token is missing");
   }
 
@@ -464,7 +470,7 @@ async function fetchBrightDataDatasetMode(searchUrl, plan, settings, timeoutMs, 
   try {
     const triggerUrl = `https://api.brightdata.com/datasets/v3/trigger?dataset_id=${encodeURIComponent(
       datasetId
-    )}&include_errors=true`;
+    )}&include_errors=true&format=json`;
     const triggerPayload = [
       {
         url: "https://www.google.com/",
@@ -476,34 +482,55 @@ async function fetchBrightDataDatasetMode(searchUrl, plan, settings, timeoutMs, 
         collapse_aio: false
       }
     ];
-    timeline.push({
-      at: new Date().toISOString(),
-      step: "trigger_request",
-      url: triggerUrl,
-      payload: triggerPayload
-    });
-    if (onProgress) onProgress(`BrightData dataset trigger for "${plan.query}"`);
+    const maxTriggerAttempts = 3;
+    let triggerJson = null;
+    for (let attempt = 1; attempt <= maxTriggerAttempts; attempt += 1) {
+      timeline.push({
+        at: new Date().toISOString(),
+        step: "trigger_request",
+        attempt,
+        url: triggerUrl,
+        payload: triggerPayload
+      });
+      if (onProgress) {
+        onProgress(`BrightData dataset trigger attempt ${attempt}/${maxTriggerAttempts} for "${plan.query}"`);
+      }
 
-    const triggerRes = await fetch(triggerUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${settings.brightDataApiToken}`
-      },
-      body: JSON.stringify(triggerPayload),
-      signal: controller.signal
-    });
+      const triggerRes = await fetch(triggerUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(triggerPayload),
+        signal: controller.signal
+      });
 
-    const triggerRaw = await triggerRes.text();
-    const triggerJson = safeJsonParse(triggerRaw);
-    timeline.push({
-      at: new Date().toISOString(),
-      step: "trigger_response",
-      status: triggerRes.status,
-      bodyPreview: truncate(triggerRaw, 1000)
-    });
-    if (!triggerRes.ok) {
-      throw new Error(`Bright Data dataset trigger HTTP ${triggerRes.status}: ${truncate(triggerRaw, 240)}`);
+      const triggerRaw = await triggerRes.text();
+      const parsed = safeJsonParse(triggerRaw);
+      timeline.push({
+        at: new Date().toISOString(),
+        step: "trigger_response",
+        attempt,
+        status: triggerRes.status,
+        bodyPreview: truncate(triggerRaw, 1000)
+      });
+
+      if (triggerRes.ok) {
+        triggerJson = parsed;
+        break;
+      }
+
+      const isRetriable = triggerRes.status === 502 || triggerRes.status === 503 || triggerRes.status === 504;
+      if (!isRetriable || attempt >= maxTriggerAttempts) {
+        throw new Error(`Bright Data dataset trigger HTTP ${triggerRes.status}: ${truncate(triggerRaw, 240)}`);
+      }
+      if (onProgress) {
+        onProgress(
+          `BrightData trigger HTTP ${triggerRes.status}, retrying in ${attempt * 1000}ms (attempt ${attempt + 1}/${maxTriggerAttempts})`
+        );
+      }
+      await sleep(attempt * 1000);
     }
 
     const snapshotId = String(
@@ -531,7 +558,7 @@ async function fetchBrightDataDatasetMode(searchUrl, plan, settings, timeoutMs, 
       const snapRes = await fetch(snapshotUrl, {
         method: "GET",
         headers: {
-          Authorization: `Bearer ${settings.brightDataApiToken}`
+          Authorization: `Bearer ${token}`
         },
         signal: controller.signal
       });
