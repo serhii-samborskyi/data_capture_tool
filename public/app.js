@@ -63,6 +63,7 @@ const settingsFields = [
   "brightDataApiToken",
   "brightDataAiModeDatasetId",
   "brightDataAiModeCountry",
+  "brightDataAiModeHtmlFallbackChars",
   "brightDataZone",
   "brightDataFormat",
   "brightDataDatasetId",

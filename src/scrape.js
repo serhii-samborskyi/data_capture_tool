@@ -819,6 +819,12 @@ async function fetchBrightDataAiModeSync(plan, settings, timeoutMs, onProgress) 
 
       const answerText = truncate(String(record.answer_text || record.answer_text_raw || "").trim(), 20000);
       const answerMarkdown = truncate(String(record.answer_text_markdown || "").trim(), 20000);
+      const answerHtml = String(record.answer_html || "");
+      const htmlFallbackChars = Math.max(
+        500,
+        Math.min(50000, Number(settings.brightDataAiModeHtmlFallbackChars || 6000))
+      );
+      const answerHtmlText = truncate(stripHtmlToText(answerHtml), htmlFallbackChars);
       const linksAttached = Array.isArray(record.links_attached) ? record.links_attached : [];
       const citations = Array.isArray(record.citations) ? record.citations : [];
       const links = [
@@ -850,6 +856,7 @@ async function fetchBrightDataAiModeSync(plan, settings, timeoutMs, onProgress) 
           timeline,
           aiAnswerText: answerText,
           aiAnswerMarkdown: answerMarkdown,
+          aiAnswerHtmlText: answerHtmlText,
           aioText: "",
           parsedLightOrganicCount: 0,
           compactOrganicPreview: "",
@@ -1222,7 +1229,9 @@ export async function collectEvidence(input, settings, options = {}) {
           evidence?.snippet?.length || 0
         )} provider=${dbg.provider || "unknown"} mode=${dbg.mode || "n/a"} aio=${
           dbg.aioPresent ? "yes" : "no"
-        } aio_len=${dbg.aioLength} organic=${dbg.organicCount}`
+        } aio_len=${dbg.aioLength} ai_answer=${dbg.aiAnswerPresent ? "yes" : "no"} ai_len=${
+          dbg.aiAnswerLength
+        } organic=${dbg.organicCount}`
       );
     }
   }

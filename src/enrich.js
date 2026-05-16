@@ -188,11 +188,20 @@ function buildEvidenceForPass(fieldEvidence, passType) {
   for (const item of fieldEvidence || []) {
     const aioText = normalizeString(item?.debug?.aioText);
     const compactOrganic = normalizeString(item?.debug?.compactOrganicPreview);
+    const aiAnswerText = normalizeString(item?.debug?.aiAnswerText);
+    const aiAnswerMarkdown = normalizeString(item?.debug?.aiAnswerMarkdown);
+    const aiHtmlText = normalizeString(item?.debug?.aiAnswerHtmlText);
     let snippet = null;
 
     if (passType === "aio") {
       if (!aioText) continue;
       snippet = `AIO text:\n${aioText}`;
+    } else if (passType === "ai_answer") {
+      if (!aiAnswerText && !aiAnswerMarkdown) continue;
+      snippet = `AI answer text:\n${aiAnswerText || ""}\n\nAI answer markdown:\n${aiAnswerMarkdown || ""}`;
+    } else if (passType === "ai_html") {
+      if (!aiHtmlText) continue;
+      snippet = `AI answer html text fallback:\n${aiHtmlText}`;
     } else if (compactOrganic) {
       snippet = `Top organic results (compact):\n${compactOrganic}`;
     } else {
@@ -213,7 +222,8 @@ function summarizeAioForEvidence(evidenceList) {
   const withAiAnswer = items.filter(
     (item) =>
       String(item?.debug?.aiAnswerText || "").trim().length > 0 ||
-      String(item?.debug?.aiAnswerMarkdown || "").trim().length > 0
+      String(item?.debug?.aiAnswerMarkdown || "").trim().length > 0 ||
+      String(item?.debug?.aiAnswerHtmlText || "").trim().length > 0
   );
   const totalAioChars = withAio.reduce(
     (sum, item) => sum + String(item?.debug?.aioText || "").trim().length,
@@ -223,7 +233,8 @@ function summarizeAioForEvidence(evidenceList) {
     (sum, item) =>
       sum +
       String(item?.debug?.aiAnswerText || "").trim().length +
-      String(item?.debug?.aiAnswerMarkdown || "").trim().length,
+      String(item?.debug?.aiAnswerMarkdown || "").trim().length +
+      String(item?.debug?.aiAnswerHtmlText || "").trim().length,
     0
   );
   return {
@@ -239,6 +250,13 @@ function shouldUseBrightDataAioTwoPass(settings) {
   return (
     Boolean(settings.useBrightDataSerp) &&
     String(settings.brightDataSerpMode || "request").toLowerCase() === "dataset"
+  );
+}
+
+function isBrightDataAiMode(settings) {
+  return (
+    Boolean(settings.useBrightDataSerp) &&
+    String(settings.brightDataSerpMode || "request").toLowerCase() === "ai_mode"
   );
 }
 
@@ -463,6 +481,7 @@ export async function runEnrichment(input, settings, options = {}) {
         { stage: "field_collect", field: field.key, index: fieldIndex + 1, total: totalFields }
       );
       const fieldTemplateVars = buildFieldTemplateVars(cleanInput, priorFieldValues);
+      const useAiMode = isBrightDataAiMode(settings);
 
       const profilePlans = buildPlansFromTemplateText({
         input: cleanInput,
@@ -482,7 +501,7 @@ export async function runEnrichment(input, settings, options = {}) {
       const collectedForField = sharedOverrideEvidence
         ? sharedOverrideEvidence
         : await collectEvidence(cleanInput, settings, {
-            planOverride: [...profilePlans, ...fieldPlans],
+            planOverride: useAiMode ? [...fieldPlans] : [...profilePlans, ...fieldPlans],
             onProgress: makeEvidenceProgressReporter(options, field.key)
           });
       if (sharedOverrideEvidence) {
@@ -507,15 +526,23 @@ export async function runEnrichment(input, settings, options = {}) {
       );
       const threshold = getFieldThreshold(field, settings);
       const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
+      const useAiModePass = isBrightDataAiMode(settings);
       const aioEvidence = buildEvidenceForPass(fieldEvidence, "aio");
       const organicEvidence = buildEvidenceForPass(fieldEvidence, "organic");
-      const passPlan =
-        useTwoPass && aioEvidence.length
-          ? [
-              { name: "aio", evidence: aioEvidence },
-              { name: "organic", evidence: organicEvidence }
-            ]
-          : [{ name: "organic", evidence: organicEvidence }];
+      const aiAnswerEvidence = buildEvidenceForPass(fieldEvidence, "ai_answer");
+      const aiHtmlEvidence = buildEvidenceForPass(fieldEvidence, "ai_html");
+      let passPlan = [{ name: "organic", evidence: organicEvidence }];
+      if (useTwoPass && aioEvidence.length) {
+        passPlan = [
+          { name: "aio", evidence: aioEvidence },
+          { name: "organic", evidence: organicEvidence }
+        ];
+      } else if (useAiModePass) {
+        passPlan = [
+          { name: "ai_answer", evidence: aiAnswerEvidence.length ? aiAnswerEvidence : fieldEvidence },
+          { name: "ai_html", evidence: aiHtmlEvidence.length ? aiHtmlEvidence : fieldEvidence }
+        ];
+      }
 
       const passDebug = [];
       let selectedPass = null;
@@ -694,6 +721,7 @@ export async function runEnrichment(input, settings, options = {}) {
               aioText: ev.debug?.aioText || null,
               aiAnswerText: ev.debug?.aiAnswerText || null,
               aiAnswerMarkdown: ev.debug?.aiAnswerMarkdown || null,
+              aiAnswerHtmlText: ev.debug?.aiAnswerHtmlText || null,
               compactOrganicPreview: ev.debug?.compactOrganicPreview || null,
               rawResponsePreview: ev.debug?.rawResponsePreview || null,
               topLinks: ev.debug?.topLinks || []
@@ -729,6 +757,7 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
 
   const fields = migrateLegacyFields(settings);
   const enabledFields = fields.filter((item) => item.enabled !== false);
+  const useAiMode = isBrightDataAiMode(settings);
   const selectedField =
     fields.find((item) => item.key === field) ||
     {
@@ -748,22 +777,21 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
   if (selectedIndex > 0) {
     for (const priorField of enabledFields.slice(0, selectedIndex)) {
       const priorVars = buildFieldTemplateVars(cleanInput, priorFieldValues);
-      const priorPlans = [
-        ...buildPlansFromTemplateText({
-          input: cleanInput,
-          templateText: settings.profileSerpQueryTemplates || "{{company}} {{city}} {{state}}",
-          field: "business_profile",
-          type: "google_serp_profile",
-          extraVars: priorVars
-        }),
-        ...buildPlansFromTemplateText({
-          input: cleanInput,
-          templateText: priorField.queryTemplates || "{{company}} {{city}} {{state}}",
-          field: priorField.key,
-          type: `google_serp_${priorField.key}`,
-          extraVars: priorVars
-        })
-      ];
+      const priorProfilePlans = buildPlansFromTemplateText({
+        input: cleanInput,
+        templateText: settings.profileSerpQueryTemplates || "{{company}} {{city}} {{state}}",
+        field: "business_profile",
+        type: "google_serp_profile",
+        extraVars: priorVars
+      });
+      const priorFieldPlans = buildPlansFromTemplateText({
+        input: cleanInput,
+        templateText: priorField.queryTemplates || "{{company}} {{city}} {{state}}",
+        field: priorField.key,
+        type: `google_serp_${priorField.key}`,
+        extraVars: priorVars
+      });
+      const priorPlans = useAiMode ? [...priorFieldPlans] : [...priorProfilePlans, ...priorFieldPlans];
 
       if (onProgress) onProgress(`Resolving prior field dependency: ${priorField.key}`);
       const priorEvidence = await collectEvidence(cleanInput, settings, {
@@ -773,15 +801,23 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
       const priorFieldEvidence = buildFieldSpecificEvidence(priorEvidence, priorField.key);
       const priorThreshold = getFieldThreshold(priorField, settings);
       const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
+      const useAiModePass = isBrightDataAiMode(settings);
       const priorAioEvidence = buildEvidenceForPass(priorFieldEvidence, "aio");
       const priorOrganicEvidence = buildEvidenceForPass(priorFieldEvidence, "organic");
-      const priorPassPlan =
-        useTwoPass && priorAioEvidence.length
-          ? [
-              { name: "aio", evidence: priorAioEvidence },
-              { name: "organic", evidence: priorOrganicEvidence }
-            ]
-          : [{ name: "organic", evidence: priorOrganicEvidence }];
+      const priorAiAnswerEvidence = buildEvidenceForPass(priorFieldEvidence, "ai_answer");
+      const priorAiHtmlEvidence = buildEvidenceForPass(priorFieldEvidence, "ai_html");
+      let priorPassPlan = [{ name: "organic", evidence: priorOrganicEvidence }];
+      if (useTwoPass && priorAioEvidence.length) {
+        priorPassPlan = [
+          { name: "aio", evidence: priorAioEvidence },
+          { name: "organic", evidence: priorOrganicEvidence }
+        ];
+      } else if (useAiModePass) {
+        priorPassPlan = [
+          { name: "ai_answer", evidence: priorAiAnswerEvidence.length ? priorAiAnswerEvidence : priorFieldEvidence },
+          { name: "ai_html", evidence: priorAiHtmlEvidence.length ? priorAiHtmlEvidence : priorFieldEvidence }
+        ];
+      }
 
       let priorSelected = null;
       const priorPassDebug = [];
@@ -825,22 +861,21 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
 
   const probeTemplateVars = buildFieldTemplateVars(cleanInput, priorFieldValues);
   const templateText = queryTemplate || selectedField.queryTemplates || "{{company}} {{city}} {{state}}";
-  const planOverride = [
-    ...buildPlansFromTemplateText({
-      input: cleanInput,
-      templateText: settings.profileSerpQueryTemplates || "{{company}} {{city}} {{state}}",
-      field: "business_profile",
-      type: "google_serp_profile",
-      extraVars: probeTemplateVars
-    }),
-    ...buildPlansFromTemplateText({
-      input: cleanInput,
-      templateText,
-      field: selectedField.key,
-      type: `google_serp_${selectedField.key}`,
-      extraVars: probeTemplateVars
-    })
-  ];
+  const probeProfilePlans = buildPlansFromTemplateText({
+    input: cleanInput,
+    templateText: settings.profileSerpQueryTemplates || "{{company}} {{city}} {{state}}",
+    field: "business_profile",
+    type: "google_serp_profile",
+    extraVars: probeTemplateVars
+  });
+  const probeFieldPlans = buildPlansFromTemplateText({
+    input: cleanInput,
+    templateText,
+    field: selectedField.key,
+    type: `google_serp_${selectedField.key}`,
+    extraVars: probeTemplateVars
+  });
+  const planOverride = useAiMode ? [...probeFieldPlans] : [...probeProfilePlans, ...probeFieldPlans];
 
   if (onProgress) {
     onProgress(
@@ -871,15 +906,23 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
   }
   const threshold = getFieldThreshold(selectedField, settings);
   const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
+  const useAiModePass = isBrightDataAiMode(settings);
   const aioEvidence = buildEvidenceForPass(fieldEvidence, "aio");
   const organicEvidence = buildEvidenceForPass(fieldEvidence, "organic");
-  const passPlan =
-    useTwoPass && aioEvidence.length
-      ? [
-          { name: "aio", evidence: aioEvidence },
-          { name: "organic", evidence: organicEvidence }
-        ]
-      : [{ name: "organic", evidence: organicEvidence }];
+  const aiAnswerEvidence = buildEvidenceForPass(fieldEvidence, "ai_answer");
+  const aiHtmlEvidence = buildEvidenceForPass(fieldEvidence, "ai_html");
+  let passPlan = [{ name: "organic", evidence: organicEvidence }];
+  if (useTwoPass && aioEvidence.length) {
+    passPlan = [
+      { name: "aio", evidence: aioEvidence },
+      { name: "organic", evidence: organicEvidence }
+    ];
+  } else if (useAiModePass) {
+    passPlan = [
+      { name: "ai_answer", evidence: aiAnswerEvidence.length ? aiAnswerEvidence : fieldEvidence },
+      { name: "ai_html", evidence: aiHtmlEvidence.length ? aiHtmlEvidence : fieldEvidence }
+    ];
+  }
 
   let selectedPass = null;
   const passDebug = [];

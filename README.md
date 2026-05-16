@@ -17,6 +17,8 @@ Prototype REST API + UI to enrich local business data using:
 - Bright Data SERP integration for Google queries (`useBrightDataSerp`), avoiding browser automation blocks.
 - Bright Data dual modes: direct `/request` or Datasets v3 (`trigger` + `snapshot` polling) with automatic fallback to `/request`.
 - Bright Data `google_ai_mode` sync mode via Datasets v3 `/scrape`, using `answer_text + answer_text_markdown` as evidence.
+- In `google_ai_mode`, the app uses one field-specific Bright Data request (no extra profile query) to reduce API cost.
+- If AI answer text is insufficient, it retries extraction using cropped text from `answer_html` as fallback evidence.
 - In dataset mode, enrichment runs two-pass extraction per field: `aio_text` first, then compact top-10 organic evidence if needed.
 - API log endpoint: `GET /api/logs/enrichment?limit=100` (includes input, AI evidence, and Qwen outputs per enrichment request).
 - Bright Data requests use `data_format: "parsed_light"` and pass only compact top-10 organic records to Qwen (smaller prompt).

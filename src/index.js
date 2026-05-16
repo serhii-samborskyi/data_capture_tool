@@ -81,6 +81,7 @@ const settingsSchema = z.object({
   brightDataApiToken: z.string().optional(),
   brightDataAiModeDatasetId: z.string().optional(),
   brightDataAiModeCountry: z.string().optional(),
+  brightDataAiModeHtmlFallbackChars: z.number().int().min(500).max(50000).optional(),
   brightDataZone: z.string().optional(),
   brightDataFormat: z.string().optional(),
   brightDataDatasetId: z.string().optional(),
@@ -179,6 +180,7 @@ function summarizeEvidenceForApiLog(debug) {
       (item) =>
         String(item?.aiAnswerText || "").trim() ||
         String(item?.aiAnswerMarkdown || "").trim() ||
+        String(item?.aiAnswerHtmlText || "").trim() ||
         String(item?.aioText || "").trim()
     )
     .map((item) => ({
@@ -189,6 +191,7 @@ function summarizeEvidenceForApiLog(debug) {
       url: item.url || null,
       aiAnswerText: String(item.aiAnswerText || "").slice(0, 4000),
       aiAnswerMarkdown: String(item.aiAnswerMarkdown || "").slice(0, 4000),
+      aiAnswerHtmlText: String(item.aiAnswerHtmlText || "").slice(0, 4000),
       aioText: String(item.aioText || "").slice(0, 4000)
     }));
   return {
