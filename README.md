@@ -20,7 +20,7 @@ Prototype REST API + UI to enrich local business data using:
 - In `google_ai_mode`, the app uses one field-specific Bright Data request (no extra profile query) to reduce API cost.
 - If AI answer text is insufficient, it retries extraction using cropped text from `answer_html` as fallback evidence.
 - In dataset mode, enrichment runs two-pass extraction per field: `aio_text` first, then compact top-10 organic evidence if needed.
-- API log endpoint: `GET /api/logs/enrichment?limit=100` (includes input, AI evidence, and Qwen outputs per enrichment request).
+- API log endpoints: `GET /api/logs/enrichment?limit=100` and `POST /api/logs/enrichment/clear` (includes input, AI evidence, and Qwen outputs per enrichment request).
 - Bright Data requests use `data_format: "parsed_light"` and pass only compact top-10 organic records to Qwen (smaller prompt).
 - Separate timeout controls: `modelRequestTimeoutMs` and `evidenceRequestTimeoutMs` for easier tuning.
 - Low-latency controls: disable model thinking, set reasoning effort, and cap max tokens per task.

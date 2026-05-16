@@ -29,6 +29,7 @@ const debugFieldSelect = qs("debugField");
 const settingsStatus = qs("settingsStatus");
 const modelNameStatus = qs("modelNameStatus");
 const refreshApiLogsBtn = qs("refreshApiLogsBtn");
+const clearApiLogsBtn = qs("clearApiLogsBtn");
 const apiLogsBox = qs("apiLogsBox");
 
 let activeFieldProbePoll = null;
@@ -805,6 +806,24 @@ refreshApiLogsBtn?.addEventListener("click", async () => {
     );
   } finally {
     setBusy(refreshApiLogsBtn, false);
+  }
+});
+
+clearApiLogsBtn?.addEventListener("click", async () => {
+  const confirmed = window.confirm("Clear all API logs?");
+  if (!confirmed) return;
+  setBusy(clearApiLogsBtn, true, "Clearing...");
+  try {
+    await fetchJson("/api/logs/enrichment/clear", { method: "POST" });
+    await loadApiLogs();
+  } catch (error) {
+    apiLogsBox.textContent = JSON.stringify(
+      { ok: false, error: String(error?.message || error) },
+      null,
+      2
+    );
+  } finally {
+    setBusy(clearApiLogsBtn, false);
   }
 });
 

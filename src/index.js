@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { mkdir, appendFile, readFile } from "fs/promises";
+import { mkdir, appendFile, readFile, writeFile } from "fs/promises";
 import { z } from "zod";
 import { ensureDatabaseSchema, prisma } from "./db.js";
 import { getSettings, updateSettings } from "./settings.js";
@@ -251,6 +251,16 @@ async function readEnrichmentApiLogs(limit = 100) {
     return out;
   } catch {
     return [];
+  }
+}
+
+async function clearEnrichmentApiLogs() {
+  try {
+    await mkdir(path.dirname(enrichmentApiLogPath), { recursive: true });
+    await writeFile(enrichmentApiLogPath, "", "utf8");
+  } catch (error) {
+    console.error("failed to clear enrichment api log:", error);
+    throw error;
   }
 }
 
@@ -789,6 +799,15 @@ app.get("/api/logs/enrichment", async (req, res) => {
   const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100)));
   const logs = await readEnrichmentApiLogs(limit);
   res.json({ ok: true, count: logs.length, logs });
+});
+
+app.post("/api/logs/enrichment/clear", async (_req, res) => {
+  try {
+    await clearEnrichmentApiLogs();
+    res.json({ ok: true, cleared: true });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
 });
 
 app.post("/api/debug/run-sample", async (_req, res) => {
