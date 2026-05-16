@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
+import { mkdir, appendFile, readFile } from "fs/promises";
 import { z } from "zod";
 import { ensureDatabaseSchema, prisma } from "./db.js";
 import { getSettings, updateSettings } from "./settings.js";
@@ -19,6 +20,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "..", "public")));
 const fieldProbeJobs = new Map();
 const enrichJobs = new Map();
+const enrichmentApiLogPath = path.join(__dirname, "..", "logs", "enrichment-api.jsonl");
 
 const inputValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
@@ -164,6 +166,89 @@ function mapEnrichmentErrorToHttp(error) {
     };
   }
   return { status: 500, body: { ok: false, error: message } };
+}
+
+function makeApiRequestId(prefix = "req") {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function summarizeEvidenceForApiLog(debug) {
+  const evidence = Array.isArray(debug?.evidenceDebug) ? debug.evidenceDebug : [];
+  const aiModeEvidence = evidence
+    .filter(
+      (item) =>
+        String(item?.aiAnswerText || "").trim() ||
+        String(item?.aiAnswerMarkdown || "").trim() ||
+        String(item?.aioText || "").trim()
+    )
+    .map((item) => ({
+      field: item.field || null,
+      mode: item.mode || null,
+      provider: item.provider || null,
+      query: item.query || null,
+      url: item.url || null,
+      aiAnswerText: String(item.aiAnswerText || "").slice(0, 4000),
+      aiAnswerMarkdown: String(item.aiAnswerMarkdown || "").slice(0, 4000),
+      aioText: String(item.aioText || "").slice(0, 4000)
+    }));
+  return {
+    evidenceCount: evidence.length,
+    aiEvidenceCount: aiModeEvidence.length,
+    aiEvidence: aiModeEvidence
+  };
+}
+
+function summarizeQwenForApiLog(debug, result) {
+  const fieldDebug = Array.isArray(debug?.fieldDebug) ? debug.fieldDebug : [];
+  return {
+    modelParsedBeforeThreshold: debug?.modelParsedBeforeThreshold || null,
+    finalResult: result || null,
+    fields: fieldDebug.map((field) => ({
+      key: field.key,
+      rawValue: field.rawValue,
+      gatedValue: field.gatedValue,
+      confidence: field.confidence,
+      passDebug: Array.isArray(field.passDebug)
+        ? field.passDebug.map((pass) => ({
+            passName: pass.passName,
+            rawValue: pass.rawValue,
+            gatedValue: pass.gatedValue,
+            confidence: pass.confidence,
+            error: pass.error || null
+          }))
+        : []
+    }))
+  };
+}
+
+async function appendEnrichmentApiLog(entry) {
+  try {
+    await mkdir(path.dirname(enrichmentApiLogPath), { recursive: true });
+    await appendFile(enrichmentApiLogPath, `${JSON.stringify(entry)}\n`, "utf8");
+  } catch (error) {
+    console.error("failed to write enrichment api log:", error);
+  }
+}
+
+async function readEnrichmentApiLogs(limit = 100) {
+  try {
+    const raw = await readFile(enrichmentApiLogPath, "utf8");
+    const lines = raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const out = [];
+    for (let i = lines.length - 1; i >= 0 && out.length < limit; i -= 1) {
+      try {
+        out.push(JSON.parse(lines[i]));
+      } catch {
+        // ignore bad line
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 function getEnabledEnrichmentFields(settings) {
@@ -391,40 +476,101 @@ app.put("/api/settings", async (req, res) => {
 });
 
 app.post("/api/enrich", async (req, res) => {
+  const requestId = makeApiRequestId("enrich");
+  const startedAt = Date.now();
+  let settings = null;
+  let input = null;
   try {
     const parsed = enrichInputSchema.parse(req.body || {});
-    const settings = await getSettings();
-    const input = normalizeInput(parsed, settings);
+    settings = await getSettings();
+    input = normalizeInput(parsed, settings);
     validateRequiredInput(input, settings);
 
-    const data = await runEnrichment(input, settings);
+    const data = await runEnrichment(input, settings, { includeDebug: true });
+    await appendEnrichmentApiLog({
+      requestId,
+      ts: new Date().toISOString(),
+      endpoint: "/api/enrich",
+      method: "POST",
+      status: 200,
+      durationMs: Date.now() - startedAt,
+      mode: String(settings.brightDataSerpMode || "request"),
+      input,
+      evidence: summarizeEvidenceForApiLog(data.debug),
+      qwen: summarizeQwenForApiLog(data.debug, data.result),
+      includeDebug: false
+    });
     res.json(data.result);
   } catch (error) {
     console.error("enrich failed:", error);
     const mapped = mapEnrichmentErrorToHttp(error);
+    await appendEnrichmentApiLog({
+      requestId,
+      ts: new Date().toISOString(),
+      endpoint: "/api/enrich",
+      method: "POST",
+      status: mapped.status,
+      durationMs: Date.now() - startedAt,
+      mode: settings ? String(settings.brightDataSerpMode || "request") : null,
+      input,
+      error: mapped.body
+    });
     res.status(mapped.status).json(mapped.body);
   }
 });
 
 app.post("/api/enrich-debug", async (req, res) => {
+  const requestId = makeApiRequestId("enrich_debug");
+  const startedAt = Date.now();
+  let settings = null;
+  let input = null;
   try {
     const parsed = enrichInputSchema.parse(req.body || {});
-    const settings = await getSettings();
-    const input = normalizeInput(parsed, settings);
+    settings = await getSettings();
+    input = normalizeInput(parsed, settings);
     validateRequiredInput(input, settings);
 
     const data = await runEnrichment(input, settings, { includeDebug: true });
+    await appendEnrichmentApiLog({
+      requestId,
+      ts: new Date().toISOString(),
+      endpoint: "/api/enrich-debug",
+      method: "POST",
+      status: 200,
+      durationMs: Date.now() - startedAt,
+      mode: String(settings.brightDataSerpMode || "request"),
+      input,
+      evidence: summarizeEvidenceForApiLog(data.debug),
+      qwen: summarizeQwenForApiLog(data.debug, data.result),
+      includeDebug: true
+    });
     res.json(data);
   } catch (error) {
-    res.status(500).json({ error: String(error?.message || error) });
+    const mapped = mapEnrichmentErrorToHttp(error);
+    await appendEnrichmentApiLog({
+      requestId,
+      ts: new Date().toISOString(),
+      endpoint: "/api/enrich-debug",
+      method: "POST",
+      status: mapped.status,
+      durationMs: Date.now() - startedAt,
+      mode: settings ? String(settings.brightDataSerpMode || "request") : null,
+      input,
+      error: mapped.body
+    });
+    res.status(mapped.status).json(mapped.body);
   }
 });
 
 app.post("/api/enrich-debug/start", async (req, res) => {
+  const requestId = makeApiRequestId("enrich_debug_start");
+  const startedAt = Date.now();
+  let settings = null;
+  let input = null;
   try {
     const parsed = enrichInputSchema.parse(req.body || {});
-    const settings = await getSettings();
-    const input = normalizeInput(parsed, settings);
+    settings = await getSettings();
+    input = normalizeInput(parsed, settings);
     validateRequiredInput(input, settings);
     const jobId = makeJobId();
 
@@ -460,10 +606,38 @@ app.post("/api/enrich-debug/start", async (req, res) => {
         job.result = data;
         job.status = "completed";
         pushJobLog(job, "Enrichment completed", 100);
+        await appendEnrichmentApiLog({
+          requestId,
+          ts: new Date().toISOString(),
+          endpoint: "/api/enrich-debug/start",
+          method: "POST",
+          status: 200,
+          durationMs: Date.now() - startedAt,
+          mode: String(settings.brightDataSerpMode || "request"),
+          input,
+          jobId,
+          evidence: summarizeEvidenceForApiLog(data.debug),
+          qwen: summarizeQwenForApiLog(data.debug, data.result),
+          includeDebug: true
+        });
       } catch (error) {
         job.error = String(error?.message || error);
         job.status = "failed";
         pushJobLog(job, `Enrichment failed: ${job.error}`, 100);
+        const mapped = mapEnrichmentErrorToHttp(error);
+        await appendEnrichmentApiLog({
+          requestId,
+          ts: new Date().toISOString(),
+          endpoint: "/api/enrich-debug/start",
+          method: "POST",
+          status: mapped.status,
+          durationMs: Date.now() - startedAt,
+          mode: settings ? String(settings.brightDataSerpMode || "request") : null,
+          input,
+          jobId,
+          includeDebug: true,
+          error: mapped.body
+        });
       } finally {
         job.updatedAt = new Date().toISOString();
       }
@@ -606,6 +780,12 @@ app.get("/api/runs", async (req, res) => {
       evidences: run.evidences
     }))
   );
+});
+
+app.get("/api/logs/enrichment", async (req, res) => {
+  const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100)));
+  const logs = await readEnrichmentApiLogs(limit);
+  res.json({ ok: true, count: logs.length, logs });
 });
 
 app.post("/api/debug/run-sample", async (_req, res) => {
@@ -751,15 +931,33 @@ app.get("/api/public/schema/enrichment", requirePublicApiKey, async (req, res) =
 });
 
 app.post("/api/public/enrich", requirePublicApiKey, async (req, res) => {
+  const requestId = makeApiRequestId("public_enrich");
+  const startedAt = Date.now();
+  let input = null;
+  let settings = null;
+  let includeDebug = false;
   try {
-    const settings = req.publicApiSettings || (await getSettings());
-    const input = normalizeInput(req.body || {}, settings);
+    settings = req.publicApiSettings || (await getSettings());
+    input = normalizeInput(req.body || {}, settings);
     validateRequiredInput(input, settings);
 
-    const includeDebug =
+    includeDebug =
       String(req.query.include_debug || "").toLowerCase() === "true" ||
       Boolean(req.body?.include_debug);
-    const data = await runEnrichment(input, settings, { includeDebug });
+    const data = await runEnrichment(input, settings, { includeDebug: true });
+    await appendEnrichmentApiLog({
+      requestId,
+      ts: new Date().toISOString(),
+      endpoint: "/api/public/enrich",
+      method: "POST",
+      status: 200,
+      durationMs: Date.now() - startedAt,
+      mode: String(settings.brightDataSerpMode || "request"),
+      input,
+      evidence: summarizeEvidenceForApiLog(data.debug),
+      qwen: summarizeQwenForApiLog(data.debug, data.result),
+      includeDebug
+    });
     if (includeDebug) {
       res.json(data);
       return;
@@ -767,6 +965,18 @@ app.post("/api/public/enrich", requirePublicApiKey, async (req, res) => {
     res.json(data.result);
   } catch (error) {
     const mapped = mapEnrichmentErrorToHttp(error);
+    await appendEnrichmentApiLog({
+      requestId,
+      ts: new Date().toISOString(),
+      endpoint: "/api/public/enrich",
+      method: "POST",
+      status: mapped.status,
+      durationMs: Date.now() - startedAt,
+      mode: settings ? String(settings.brightDataSerpMode || "request") : null,
+      input,
+      includeDebug,
+      error: mapped.body
+    });
     res.status(mapped.status).json(mapped.body);
   }
 });

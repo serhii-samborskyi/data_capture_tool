@@ -28,6 +28,8 @@ const inputFieldsContainer = qs("inputFieldsContainer");
 const debugFieldSelect = qs("debugField");
 const settingsStatus = qs("settingsStatus");
 const modelNameStatus = qs("modelNameStatus");
+const refreshApiLogsBtn = qs("refreshApiLogsBtn");
+const apiLogsBox = qs("apiLogsBox");
 
 let activeFieldProbePoll = null;
 let activeEnrichPoll = null;
@@ -555,6 +557,12 @@ async function loadRuns() {
   renderRuns(runs);
 }
 
+async function loadApiLogs() {
+  const data = await fetchJson("/api/logs/enrichment?limit=100");
+  const logs = Array.isArray(data?.logs) ? data.logs : [];
+  apiLogsBox.textContent = JSON.stringify(logs, null, 2);
+}
+
 function dynamicNullResult() {
   syncFieldStateFromDom();
   const out = {};
@@ -784,6 +792,21 @@ modelCompatBtn.addEventListener("click", async () => {
   }
 });
 
+refreshApiLogsBtn?.addEventListener("click", async () => {
+  setBusy(refreshApiLogsBtn, true, "Loading...");
+  try {
+    await loadApiLogs();
+  } catch (error) {
+    apiLogsBox.textContent = JSON.stringify(
+      { ok: false, error: String(error?.message || error) },
+      null,
+      2
+    );
+  } finally {
+    setBusy(refreshApiLogsBtn, false);
+  }
+});
+
 loadModelsBtn?.addEventListener("click", async () => {
   await loadModelNamesFromApi();
 });
@@ -874,4 +897,5 @@ fieldDebugForm?.addEventListener("submit", async (event) => {
 (async function init() {
   await loadSettings();
   await loadRuns();
+  await loadApiLogs();
 })();

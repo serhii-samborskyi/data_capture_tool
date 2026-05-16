@@ -692,6 +692,8 @@ export async function runEnrichment(input, settings, options = {}) {
               fallbackUsed: Boolean(ev.debug?.fallbackUsed),
               timeline: Array.isArray(ev.debug?.timeline) ? ev.debug.timeline : [],
               aioText: ev.debug?.aioText || null,
+              aiAnswerText: ev.debug?.aiAnswerText || null,
+              aiAnswerMarkdown: ev.debug?.aiAnswerMarkdown || null,
               compactOrganicPreview: ev.debug?.compactOrganicPreview || null,
               rawResponsePreview: ev.debug?.rawResponsePreview || null,
               topLinks: ev.debug?.topLinks || []
