@@ -470,7 +470,7 @@ async function fetchBrightDataDatasetMode(searchUrl, plan, settings, timeoutMs, 
   try {
     const triggerUrl = `https://api.brightdata.com/datasets/v3/trigger?dataset_id=${encodeURIComponent(
       datasetId
-    )}&include_errors=true&format=json`;
+    )}&include_errors=true`;
     const triggerPayload = [
       {
         url: "https://www.google.com/",
@@ -549,54 +549,148 @@ async function fetchBrightDataDatasetMode(searchUrl, plan, settings, timeoutMs, 
     await sleep(initialWaitMs);
 
     const startedAt = Date.now();
+    const progressUrl = `https://api.brightdata.com/datasets/v3/progress/${encodeURIComponent(snapshotId)}`;
     const snapshotUrl = `https://api.brightdata.com/datasets/v3/snapshot/${encodeURIComponent(
       snapshotId
     )}?format=json`;
 
     while (Date.now() - startedAt <= maxWaitMs) {
       const elapsed = Date.now() - startedAt;
-      const snapRes = await fetch(snapshotUrl, {
+      const progressRes = await fetch(progressUrl, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${token}`
         },
         signal: controller.signal
       });
-      const snapRaw = await snapRes.text();
-      const snapJson = safeJsonParse(snapRaw);
-      const status = String(snapJson?.status || "").toLowerCase();
+      const progressRaw = await progressRes.text();
+      const progressJson = safeJsonParse(progressRaw);
+      const progressStatus = String(progressJson?.status || "").toLowerCase();
 
       timeline.push({
         at: new Date().toISOString(),
-        step: "snapshot_poll",
-        statusCode: snapRes.status,
+        step: "progress_poll",
+        statusCode: progressRes.status,
         elapsedMs: elapsed,
-        status: status || null,
-        bodyPreview: truncate(snapRaw, 1000)
+        status: progressStatus || null,
+        bodyPreview: truncate(progressRaw, 1000)
       });
 
-      if (!snapRes.ok) {
-        throw new Error(`Bright Data snapshot HTTP ${snapRes.status}: ${truncate(snapRaw, 240)}`);
+      if (!progressRes.ok) {
+        const isRetriableProgress =
+          progressRes.status === 429 ||
+          progressRes.status === 500 ||
+          progressRes.status === 502 ||
+          progressRes.status === 503 ||
+          progressRes.status === 504;
+        if (isRetriableProgress) {
+          if (onProgress) {
+            onProgress(
+              `BrightData progress HTTP ${progressRes.status} for ${snapshotId}, retrying after ${pollIntervalMs}ms`
+            );
+          }
+          await sleep(pollIntervalMs);
+          continue;
+        }
+        throw new Error(`Bright Data progress HTTP ${progressRes.status}: ${truncate(progressRaw, 240)}`);
       }
 
-      if (status === "running" || status === "collecting" || status === "digesting" || status === "starting") {
-        if (onProgress) onProgress(`BrightData snapshot ${snapshotId} status=${status} elapsed=${elapsed}ms`);
+      if (
+        progressStatus === "starting" ||
+        progressStatus === "running" ||
+        progressStatus === "collecting" ||
+        progressStatus === "digesting" ||
+        progressStatus === "building" ||
+        !progressStatus
+      ) {
+        if (onProgress) {
+          onProgress(`BrightData progress ${snapshotId} status=${progressStatus || "unknown"} elapsed=${elapsed}ms`);
+        }
         await sleep(pollIntervalMs);
         continue;
       }
 
-      const hasData = Array.isArray(snapJson) || Array.isArray(snapJson?.data) || Array.isArray(snapJson?.results);
-      if (hasData) {
-        if (onProgress) onProgress(`BrightData snapshot ${snapshotId} ready`);
+      if (progressStatus === "failed") {
+        throw new Error(`Bright Data snapshot failed: ${truncate(progressRaw, 240)}`);
+      }
+
+      if (progressStatus !== "ready") {
+        if (onProgress) {
+          onProgress(
+            `BrightData progress ${snapshotId} status=${progressStatus || "unknown"}; waiting ${pollIntervalMs}ms`
+          );
+        }
+        await sleep(pollIntervalMs);
+        continue;
+      }
+
+      if (onProgress) onProgress(`BrightData progress ${snapshotId} ready; downloading snapshot`);
+      const maxSnapshotFetchAttempts = 3;
+      for (let attempt = 1; attempt <= maxSnapshotFetchAttempts; attempt += 1) {
+        const snapRes = await fetch(snapshotUrl, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`
+          },
+          signal: controller.signal
+        });
+        const snapRaw = await snapRes.text();
+        const snapJson = safeJsonParse(snapRaw);
+        const snapStatus = String(snapJson?.status || "").toLowerCase();
+
+        timeline.push({
+          at: new Date().toISOString(),
+          step: "snapshot_fetch",
+          attempt,
+          statusCode: snapRes.status,
+          elapsedMs: Date.now() - startedAt,
+          status: snapStatus || null,
+          bodyPreview: truncate(snapRaw, 1000)
+        });
+
+        if (!snapRes.ok) {
+          const isRetriableSnapshot =
+            snapRes.status === 429 ||
+            snapRes.status === 500 ||
+            snapRes.status === 502 ||
+            snapRes.status === 503 ||
+            snapRes.status === 504;
+          if (isRetriableSnapshot && attempt < maxSnapshotFetchAttempts) {
+            const retryDelayMs = attempt * 1000;
+            if (onProgress) {
+              onProgress(
+                `BrightData snapshot HTTP ${snapRes.status}, retrying in ${retryDelayMs}ms (attempt ${attempt + 1}/${maxSnapshotFetchAttempts})`
+              );
+            }
+            await sleep(retryDelayMs);
+            continue;
+          }
+          if (isRetriableSnapshot) {
+            if (onProgress) {
+              onProgress(
+                `BrightData snapshot HTTP ${snapRes.status} after ${maxSnapshotFetchAttempts} attempts; will re-check progress`
+              );
+            }
+            await sleep(pollIntervalMs);
+            break;
+          }
+          throw new Error(`Bright Data snapshot HTTP ${snapRes.status}: ${truncate(snapRaw, 240)}`);
+        }
+
+        const hasData = Array.isArray(snapJson) || Array.isArray(snapJson?.data) || Array.isArray(snapJson?.results);
+        if (hasData) {
+          if (onProgress) onProgress(`BrightData snapshot ${snapshotId} downloaded`);
+          return { parsedPayload: snapJson, rawText: snapRaw, timeline, snapshotId };
+        }
+
+        if (snapStatus === "running" || snapStatus === "building" || snapStatus === "starting") {
+          if (onProgress) onProgress(`BrightData snapshot ${snapshotId} not ready payload, re-checking progress`);
+          await sleep(pollIntervalMs);
+          break;
+        }
+
         return { parsedPayload: snapJson, rawText: snapRaw, timeline, snapshotId };
       }
-
-      if (status === "failed") {
-        throw new Error(`Bright Data snapshot failed: ${truncate(snapRaw, 240)}`);
-      }
-
-      // Unexpected shape, still return so downstream can extract whatever exists.
-      return { parsedPayload: snapJson, rawText: snapRaw, timeline, snapshotId };
     }
 
     throw new Error(`Bright Data snapshot timeout after ${maxWaitMs}ms`);
