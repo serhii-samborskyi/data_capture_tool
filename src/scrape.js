@@ -269,6 +269,8 @@ function buildCompactOrganicLines(organicItems, limit = 10) {
 
 function summarizeEvidenceDebug(evidence) {
   const aioText = String(evidence?.debug?.aioText || "").trim();
+  const aiAnswerText = String(evidence?.debug?.aiAnswerText || "").trim();
+  const aiAnswerMarkdown = String(evidence?.debug?.aiAnswerMarkdown || "").trim();
   const mode = String(evidence?.debug?.mode || "");
   const provider = String(evidence?.debug?.provider || "");
   const organicCount = Number(evidence?.debug?.parsedLightOrganicCount || 0);
@@ -277,7 +279,9 @@ function summarizeEvidenceDebug(evidence) {
     mode,
     organicCount,
     aioPresent: Boolean(aioText),
-    aioLength: aioText.length
+    aioLength: aioText.length,
+    aiAnswerPresent: Boolean(aiAnswerText || aiAnswerMarkdown),
+    aiAnswerLength: aiAnswerText.length + aiAnswerMarkdown.length
   };
 }
 
@@ -316,6 +320,28 @@ function extractAioText(parsed) {
     if (cleaned) return cleaned;
   }
   return "";
+}
+
+function getBrightDataSerpMode(settings) {
+  const raw = String(settings?.brightDataSerpMode || "request")
+    .trim()
+    .toLowerCase();
+  if (raw === "dataset" || raw === "ai_mode" || raw === "request") return raw;
+  return "request";
+}
+
+function extractAiModeRecord(parsedPayload) {
+  if (Array.isArray(parsedPayload)) {
+    const first = parsedPayload.find((item) => item && typeof item === "object");
+    if (first) return first;
+  }
+  if (parsedPayload && typeof parsedPayload === "object") {
+    if (Array.isArray(parsedPayload.results) && parsedPayload.results[0]) return parsedPayload.results[0];
+    if (Array.isArray(parsedPayload.data) && parsedPayload.data[0]) return parsedPayload.data[0];
+    if (Array.isArray(parsedPayload.items) && parsedPayload.items[0]) return parsedPayload.items[0];
+    return parsedPayload;
+  }
+  return null;
 }
 
 function buildBrightDataEvidence({
@@ -704,10 +730,162 @@ async function fetchBrightDataDatasetMode(searchUrl, plan, settings, timeoutMs, 
   }
 }
 
+async function fetchBrightDataAiModeSync(plan, settings, timeoutMs, onProgress) {
+  const token = getBrightDataToken(settings);
+  if (!token) {
+    throw new Error("Bright Data API token is missing");
+  }
+
+  const datasetId = String(settings.brightDataAiModeDatasetId || "gd_mcswdt6z2elth3zqr2").trim();
+  if (!datasetId) {
+    throw new Error("Bright Data AI Mode dataset id is missing");
+  }
+
+  const country = String(settings.brightDataAiModeCountry || "").trim();
+  const endpoint = `https://api.brightdata.com/datasets/v3/scrape?dataset_id=${encodeURIComponent(
+    datasetId
+  )}&notify=false&include_errors=true`;
+  const payload = {
+    input: [
+      {
+        url: "https://google.com/aimode",
+        prompt: plan.query,
+        country
+      }
+    ]
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeline = [];
+
+  try {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (onProgress) {
+        onProgress(`BrightData AI mode scrape attempt ${attempt}/${maxAttempts} for "${plan.query}"`);
+      }
+      timeline.push({
+        at: new Date().toISOString(),
+        step: "ai_mode_scrape_request",
+        attempt,
+        url: endpoint,
+        payload
+      });
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      const raw = await response.text();
+      const parsed = safeJsonParse(raw);
+      timeline.push({
+        at: new Date().toISOString(),
+        step: "ai_mode_scrape_response",
+        attempt,
+        statusCode: response.status,
+        bodyPreview: truncate(raw, 1000)
+      });
+
+      if (!response.ok) {
+        const retriable =
+          response.status === 429 ||
+          response.status === 500 ||
+          response.status === 502 ||
+          response.status === 503 ||
+          response.status === 504;
+        if (retriable && attempt < maxAttempts) {
+          const delayMs = attempt * 1000;
+          if (onProgress) {
+            onProgress(
+              `BrightData AI mode HTTP ${response.status}, retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxAttempts})`
+            );
+          }
+          await sleep(delayMs);
+          continue;
+        }
+        throw new Error(`Bright Data AI mode HTTP ${response.status}: ${truncate(raw, 240)}`);
+      }
+
+      const record = extractAiModeRecord(parsed);
+      if (!record || typeof record !== "object") {
+        throw new Error("Bright Data AI mode response is missing record payload");
+      }
+
+      const answerText = truncate(String(record.answer_text || record.answer_text_raw || "").trim(), 20000);
+      const answerMarkdown = truncate(String(record.answer_text_markdown || "").trim(), 20000);
+      const linksAttached = Array.isArray(record.links_attached) ? record.links_attached : [];
+      const citations = Array.isArray(record.citations) ? record.citations : [];
+      const links = [
+        ...linksAttached.map((item) => ({
+          href: String(item?.url || ""),
+          text: String(item?.text || "")
+        })),
+        ...citations.map((item) => ({
+          href: String(item?.url || ""),
+          text: String(item?.title || item?.description || "")
+        }))
+      ].filter((item) => item.href);
+
+      let snippet = `Search query: ${plan.query}\nSearch URL: ${record.url || ""}`;
+      if (answerText) snippet += `\nAI answer text:\n${answerText}`;
+      if (answerMarkdown) snippet += `\nAI answer markdown:\n${answerMarkdown}`;
+
+      return {
+        sourceType: plan.type,
+        field: plan.field || null,
+        query: plan.query,
+        queryTemplate: plan.queryTemplate || null,
+        url: String(record.url || "https://google.com/aimode"),
+        snippet: truncate(snippet, 4200),
+        debug: {
+          provider: "brightdata",
+          mode: "ai_mode",
+          fallbackUsed: false,
+          timeline,
+          aiAnswerText: answerText,
+          aiAnswerMarkdown: answerMarkdown,
+          aioText: "",
+          parsedLightOrganicCount: 0,
+          compactOrganicPreview: "",
+          rawResponsePreview: truncate(raw, 20000),
+          topLinks: links.slice(0, 10)
+        }
+      };
+    }
+    throw new Error("Bright Data AI mode request failed after retries");
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Bright Data AI mode timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress) {
   const searchUrl = buildSearchUrl(plan.query, "google");
-  const mode = String(settings.brightDataSerpMode || "request").toLowerCase() === "dataset" ? "dataset" : "request";
+  const mode = getBrightDataSerpMode(settings);
   const fallbackToRequest = Boolean(settings.brightDataDatasetFallbackToRequest);
+
+  if (mode === "ai_mode") {
+    const evidence = await fetchBrightDataAiModeSync(plan, settings, timeoutMs, onProgress);
+    const summary = summarizeEvidenceDebug(evidence);
+    if (onProgress) {
+      onProgress(
+        `BrightData parsed: field=${plan.field || "unknown"} mode=${summary.mode} ai_answer=${
+          summary.aiAnswerPresent ? "yes" : "no"
+        } ai_len=${summary.aiAnswerLength}`
+      );
+    }
+    return evidence;
+  }
 
   if (mode === "dataset") {
     try {
@@ -726,7 +904,9 @@ async function collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress) 
         onProgress(
           `BrightData parsed: field=${plan.field || "unknown"} mode=${summary.mode} aio=${
             summary.aioPresent ? "yes" : "no"
-          } aio_len=${summary.aioLength} organic=${summary.organicCount}`
+          } aio_len=${summary.aioLength} organic=${summary.organicCount} ai_answer=${
+            summary.aiAnswerPresent ? "yes" : "no"
+          } ai_len=${summary.aiAnswerLength}`
         );
       }
       return evidence;
@@ -757,7 +937,9 @@ async function collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress) 
         onProgress(
           `BrightData parsed: field=${plan.field || "unknown"} mode=${summary.mode} aio=${
             summary.aioPresent ? "yes" : "no"
-          } aio_len=${summary.aioLength} organic=${summary.organicCount}`
+          } aio_len=${summary.aioLength} organic=${summary.organicCount} ai_answer=${
+            summary.aiAnswerPresent ? "yes" : "no"
+          } ai_len=${summary.aiAnswerLength}`
         );
       }
       return evidence;
@@ -779,7 +961,9 @@ async function collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress) 
     onProgress(
       `BrightData parsed: field=${plan.field || "unknown"} mode=${summary.mode} aio=${
         summary.aioPresent ? "yes" : "no"
-      } aio_len=${summary.aioLength} organic=${summary.organicCount}`
+      } aio_len=${summary.aioLength} organic=${summary.organicCount} ai_answer=${
+        summary.aiAnswerPresent ? "yes" : "no"
+      } ai_len=${summary.aiAnswerLength}`
     );
   }
   return evidence;
@@ -967,7 +1151,7 @@ async function runPlanWithRetries({
     debug: {
       provider: shouldUseBrightDataSerp ? "brightdata" : "playwright",
       mode: shouldUseBrightDataSerp
-        ? String(settings.brightDataSerpMode || "request").toLowerCase()
+        ? getBrightDataSerpMode(settings)
         : "playwright",
       rawResponsePreview: "",
       topLinks: []
@@ -982,7 +1166,7 @@ function resolveEvidenceTimeoutForPlan(plan, settings, baseTimeoutMs) {
     plan.engine === "google" &&
     Boolean(settings.useBrightDataSerp) &&
     Boolean(settings.brightDataApiToken) &&
-    String(settings.brightDataSerpMode || "request").toLowerCase() === "dataset";
+    getBrightDataSerpMode(settings) === "dataset";
 
   if (!isBrightDataDatasetPlan) return base;
 

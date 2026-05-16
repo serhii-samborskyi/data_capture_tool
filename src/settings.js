@@ -24,6 +24,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   useBrightDataSerp: true,
   brightDataSerpMode: process.env.BRIGHT_DATA_SERP_MODE || "request",
   brightDataApiToken: process.env.BRIGHT_DATA_API_TOKEN || "",
+  brightDataAiModeDatasetId: process.env.BRIGHT_DATA_AI_MODE_DATASET_ID || "gd_mcswdt6z2elth3zqr2",
+  brightDataAiModeCountry: process.env.BRIGHT_DATA_AI_MODE_COUNTRY || "",
   brightDataZone: process.env.BRIGHT_DATA_ZONE || "serp_api1",
   brightDataFormat: process.env.BRIGHT_DATA_FORMAT || "raw",
   brightDataDatasetId: process.env.BRIGHT_DATA_DATASET_ID || "gd_mfz5x93lmsjjjylob",

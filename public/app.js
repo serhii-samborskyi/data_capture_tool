@@ -59,6 +59,8 @@ const settingsFields = [
   "useBrightDataSerp",
   "brightDataSerpMode",
   "brightDataApiToken",
+  "brightDataAiModeDatasetId",
+  "brightDataAiModeCountry",
   "brightDataZone",
   "brightDataFormat",
   "brightDataDatasetId",

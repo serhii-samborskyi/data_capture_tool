@@ -16,6 +16,7 @@ Prototype REST API + UI to enrich local business data using:
 - `Google SERP Only Mode` (default on): gather evidence from Google SERP text + links, then extract via Qwen.
 - Bright Data SERP integration for Google queries (`useBrightDataSerp`), avoiding browser automation blocks.
 - Bright Data dual modes: direct `/request` or Datasets v3 (`trigger` + `snapshot` polling) with automatic fallback to `/request`.
+- Bright Data `google_ai_mode` sync mode via Datasets v3 `/scrape`, using `answer_text + answer_text_markdown` as evidence.
 - In dataset mode, enrichment runs two-pass extraction per field: `aio_text` first, then compact top-10 organic evidence if needed.
 - Bright Data requests use `data_format: "parsed_light"` and pass only compact top-10 organic records to Qwen (smaller prompt).
 - Separate timeout controls: `modelRequestTimeoutMs` and `evidenceRequestTimeoutMs` for easier tuning.

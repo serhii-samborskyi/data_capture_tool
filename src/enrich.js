@@ -210,14 +210,28 @@ function buildEvidenceForPass(fieldEvidence, passType) {
 function summarizeAioForEvidence(evidenceList) {
   const items = Array.isArray(evidenceList) ? evidenceList : [];
   const withAio = items.filter((item) => String(item?.debug?.aioText || "").trim().length > 0);
+  const withAiAnswer = items.filter(
+    (item) =>
+      String(item?.debug?.aiAnswerText || "").trim().length > 0 ||
+      String(item?.debug?.aiAnswerMarkdown || "").trim().length > 0
+  );
   const totalAioChars = withAio.reduce(
     (sum, item) => sum + String(item?.debug?.aioText || "").trim().length,
+    0
+  );
+  const totalAiAnswerChars = withAiAnswer.reduce(
+    (sum, item) =>
+      sum +
+      String(item?.debug?.aiAnswerText || "").trim().length +
+      String(item?.debug?.aiAnswerMarkdown || "").trim().length,
     0
   );
   return {
     total: items.length,
     withAio: withAio.length,
-    totalAioChars
+    totalAioChars,
+    withAiAnswer: withAiAnswer.length,
+    totalAiAnswerChars
   };
 }
 
@@ -481,7 +495,7 @@ export async function runEnrichment(input, settings, options = {}) {
       const aioSummary = summarizeAioForEvidence(fieldEvidence);
       emitProgress(
         options,
-        `Field ${fieldIndex + 1}/${totalFields}: evidence summary for ${field.key} sources=${aioSummary.total} aio_sources=${aioSummary.withAio} aio_chars=${aioSummary.totalAioChars}`,
+        `Field ${fieldIndex + 1}/${totalFields}: evidence summary for ${field.key} sources=${aioSummary.total} aio_sources=${aioSummary.withAio} aio_chars=${aioSummary.totalAioChars} ai_answer_sources=${aioSummary.withAiAnswer} ai_answer_chars=${aioSummary.totalAiAnswerChars}`,
         Math.min(95, fieldStartProgress + 3),
         { stage: "field_evidence_summary", field: field.key }
       );
@@ -850,7 +864,7 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
   const aioSummary = summarizeAioForEvidence(fieldEvidence);
   if (onProgress) {
     onProgress(
-      `Field evidence summary: field=${selectedField.key} sources=${aioSummary.total} aio_sources=${aioSummary.withAio} aio_chars=${aioSummary.totalAioChars}`
+      `Field evidence summary: field=${selectedField.key} sources=${aioSummary.total} aio_sources=${aioSummary.withAio} aio_chars=${aioSummary.totalAioChars} ai_answer_sources=${aioSummary.withAiAnswer} ai_answer_chars=${aioSummary.totalAiAnswerChars}`
     );
   }
   const threshold = getFieldThreshold(selectedField, settings);
