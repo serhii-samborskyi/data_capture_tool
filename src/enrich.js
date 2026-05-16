@@ -310,6 +310,15 @@ function emitProgress(options, message, progress = null, extra = {}) {
   });
 }
 
+function makeEvidenceProgressReporter(options, fieldKey = null) {
+  return (message) => {
+    emitProgress(options, `Evidence: ${String(message || "")}`, null, {
+      stage: "evidence_log",
+      field: fieldKey
+    });
+  };
+}
+
 function buildFieldTemplateVars(input, priorFieldValues) {
   const out = {};
   for (const [key, value] of Object.entries(input || {})) {
@@ -404,6 +413,18 @@ export async function runEnrichment(input, settings, options = {}) {
 
   try {
     emitProgress(options, "Starting enrichment run", 5, { stage: "start" });
+    emitProgress(
+      options,
+      `Config: brightdata=${Boolean(settings.useBrightDataSerp)} mode=${String(
+        settings.brightDataSerpMode || "request"
+      )} dataset_wait=${Number(settings.brightDataDatasetInitialWaitMs || 15000)}ms poll=${Number(
+        settings.brightDataDatasetPollIntervalMs || 30000
+      )}ms max_wait=${Number(settings.brightDataDatasetMaxWaitMs || 120000)}ms fallback=${Boolean(
+        settings.brightDataDatasetFallbackToRequest
+      )}`,
+      6,
+      { stage: "config" }
+    );
     const result = {};
     const rawResult = {};
     const fieldConfidences = {};
@@ -413,7 +434,8 @@ export async function runEnrichment(input, settings, options = {}) {
 
     const sharedOverrideEvidence = Array.isArray(options.planOverride)
       ? await collectEvidence(cleanInput, settings, {
-          planOverride: options.planOverride
+          planOverride: options.planOverride,
+          onProgress: makeEvidenceProgressReporter(options, "all")
         })
       : null;
 
@@ -446,7 +468,8 @@ export async function runEnrichment(input, settings, options = {}) {
       const collectedForField = sharedOverrideEvidence
         ? sharedOverrideEvidence
         : await collectEvidence(cleanInput, settings, {
-            planOverride: [...profilePlans, ...fieldPlans]
+            planOverride: [...profilePlans, ...fieldPlans],
+            onProgress: makeEvidenceProgressReporter(options, field.key)
           });
       if (sharedOverrideEvidence) {
         if (!allEvidence.length) allEvidence.push(...collectedForField);
