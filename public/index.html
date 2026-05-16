@@ -132,6 +132,33 @@
             Use Bright Data SERP API
           </label>
           <label>
+            Bright Data SERP Mode
+            <select id="brightDataSerpMode">
+              <option value="request">request (sync)</option>
+              <option value="dataset">dataset (trigger + snapshot)</option>
+            </select>
+          </label>
+          <label>
+            Bright Data Dataset ID
+            <input id="brightDataDatasetId" placeholder="gd_mfz5x93lmsjjjylob" />
+          </label>
+          <label>
+            Dataset Initial Wait (ms)
+            <input id="brightDataDatasetInitialWaitMs" type="number" min="1000" max="120000" />
+          </label>
+          <label>
+            Dataset Poll Interval (ms)
+            <input id="brightDataDatasetPollIntervalMs" type="number" min="1000" max="120000" />
+          </label>
+          <label>
+            Dataset Max Wait (ms)
+            <input id="brightDataDatasetMaxWaitMs" type="number" min="5000" max="600000" />
+          </label>
+          <label class="checkbox-row">
+            <input id="brightDataDatasetFallbackToRequest" type="checkbox" />
+            Fallback to /request when dataset is not ready
+          </label>
+          <label>
             Bright Data Zone
             <input id="brightDataZone" placeholder="serp_api1" />
           </label>

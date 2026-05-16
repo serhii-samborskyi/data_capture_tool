@@ -113,6 +113,10 @@ function renderPromptTemplate(template, { input, evidenceLines, field, fieldValu
 
 function buildDefaultFieldPrompt({ input, field, evidence }) {
   const evidenceLines = buildEvidenceLines(evidence, { maxSources: 4, snippetMax: 1600 });
+  return buildDefaultFieldPromptFromEvidenceLines({ input, field, evidenceLines });
+}
+
+function buildDefaultFieldPromptFromEvidenceLines({ input, field, evidenceLines }) {
   const confidenceKey = `${field.key}_confidence`;
 
   return `Find ${field.label || field.key} from provided search evidence only.
@@ -138,12 +142,16 @@ Return exactly:
 }`;
 }
 
-function buildFieldPrompt({ input, field, evidence, fieldValues = {} }) {
-  const evidenceLines = buildEvidenceLines(evidence, { maxSources: 4, snippetMax: 1600 });
+function buildFieldPromptFromEvidenceLines({ input, field, evidenceLines, fieldValues = {} }) {
   if (!field.promptTemplate) {
-    return buildDefaultFieldPrompt({ input, field, evidence });
+    return buildDefaultFieldPromptFromEvidenceLines({ input, field, evidenceLines });
   }
   return renderPromptTemplate(field.promptTemplate, { input, evidenceLines, field, fieldValues });
+}
+
+function buildFieldPrompt({ input, field, evidence, fieldValues = {} }) {
+  const evidenceLines = buildEvidenceLines(evidence, { maxSources: 4, snippetMax: 1600 });
+  return buildFieldPromptFromEvidenceLines({ input, field, evidenceLines, fieldValues });
 }
 
 function extractFieldFromParsed(parsed, fieldKey) {
@@ -173,6 +181,105 @@ function buildFieldSpecificEvidence(evidence, fieldKey) {
   const shared = evidence.filter((item) => item.field === "business_profile");
   if (!specific.length) return shared.slice(0, 6);
   return [...specific, ...shared].slice(0, 8);
+}
+
+function buildEvidenceForPass(fieldEvidence, passType) {
+  const out = [];
+  for (const item of fieldEvidence || []) {
+    const aioText = normalizeString(item?.debug?.aioText);
+    const compactOrganic = normalizeString(item?.debug?.compactOrganicPreview);
+    let snippet = null;
+
+    if (passType === "aio") {
+      if (!aioText) continue;
+      snippet = `AIO text:\n${aioText}`;
+    } else if (compactOrganic) {
+      snippet = `Top organic results (compact):\n${compactOrganic}`;
+    } else {
+      snippet = item?.snippet || "";
+    }
+
+    out.push({
+      ...item,
+      snippet
+    });
+  }
+  return out;
+}
+
+function shouldUseBrightDataAioTwoPass(settings) {
+  return (
+    Boolean(settings.useBrightDataSerp) &&
+    String(settings.brightDataSerpMode || "request").toLowerCase() === "dataset"
+  );
+}
+
+async function runFieldExtractionPass({
+  settings,
+  input,
+  field,
+  fieldValues,
+  evidenceForPrompt,
+  threshold,
+  passName
+}) {
+  const prompt = buildFieldPrompt({
+    input,
+    field,
+    evidence: evidenceForPrompt,
+    fieldValues
+  });
+
+  try {
+    const model = await inferEnrichmentDetailed({
+      settings,
+      prompt,
+      timeoutMs: getModelTimeoutMs(settings),
+      options: { maxTokens: getFieldMaxTokens(field, settings) }
+    });
+
+    const extracted = extractFieldFromParsed(model.parsed, field.key);
+    let value = extracted.value;
+    if (field.key === "top_service") {
+      value = normalizeTopService(value);
+    }
+
+    const gatedValue = extracted.confidence >= threshold ? value : null;
+    const shouldRetry = !value || extracted.confidence < threshold;
+    return {
+      ok: true,
+      passName,
+      prompt,
+      evidenceCount: evidenceForPrompt.length,
+      value,
+      confidence: extracted.confidence,
+      gatedValue,
+      shouldRetry,
+      confidenceKey: extracted.confidenceKey,
+      model
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      passName,
+      prompt,
+      evidenceCount: evidenceForPrompt.length,
+      value: null,
+      confidence: 0,
+      gatedValue: null,
+      shouldRetry: true,
+      confidenceKey: `${field.key}_confidence`,
+      error: String(error?.message || error),
+      model: {
+        parsed: null,
+        rawResponseText: "",
+        rawResponseJson: null,
+        endpointUrl: null,
+        attempts: Array.isArray(error?.attempts) ? error.attempts : [],
+        payload: null
+      }
+    };
+  }
 }
 
 function average(values) {
@@ -340,33 +447,63 @@ export async function runEnrichment(input, settings, options = {}) {
         Math.min(95, fieldStartProgress + 5),
         { stage: "field_model", field: field.key, index: fieldIndex + 1, total: totalFields }
       );
-      const prompt = buildFieldPrompt({
-        input: cleanInput,
-        field,
-        evidence: fieldEvidence,
-        fieldValues: priorFieldValues
-      });
-      const model = await inferEnrichmentDetailed({
-        settings,
-        prompt,
-        timeoutMs: getModelTimeoutMs(settings),
-        options: { maxTokens: getFieldMaxTokens(field, settings) }
-      });
+      const threshold = getFieldThreshold(field, settings);
+      const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
+      const aioEvidence = buildEvidenceForPass(fieldEvidence, "aio");
+      const organicEvidence = buildEvidenceForPass(fieldEvidence, "organic");
+      const passPlan =
+        useTwoPass && aioEvidence.length
+          ? [
+              { name: "aio", evidence: aioEvidence },
+              { name: "organic", evidence: organicEvidence }
+            ]
+          : [{ name: "organic", evidence: organicEvidence }];
 
-      const extracted = extractFieldFromParsed(model.parsed, field.key);
-      let value = extracted.value;
-      if (field.key === "top_service") {
-        value = normalizeTopService(value);
+      const passDebug = [];
+      let selectedPass = null;
+      for (const pass of passPlan) {
+        emitProgress(
+          options,
+          `Field ${fieldIndex + 1}/${totalFields}: qwen pass=${pass.name} for ${field.key}`,
+          Math.min(96, fieldStartProgress + 8),
+          { stage: "field_model_pass", field: field.key, pass: pass.name }
+        );
+        const passResult = await runFieldExtractionPass({
+          settings,
+          input: cleanInput,
+          field,
+          fieldValues: priorFieldValues,
+          evidenceForPrompt: pass.evidence.length ? pass.evidence : fieldEvidence,
+          threshold,
+          passName: pass.name
+        });
+        passDebug.push(passResult);
+        selectedPass = passResult;
+        if (!passResult.shouldRetry) break;
       }
 
-      const threshold = getFieldThreshold(field, settings);
-      const gatedValue = extracted.confidence >= threshold ? value : null;
+      const chosen = selectedPass || {
+        value: null,
+        confidence: 0,
+        gatedValue: null,
+        confidenceKey: `${field.key}_confidence`,
+        model: {
+          payload: null,
+          rawResponseText: "",
+          rawResponseJson: null,
+          endpointUrl: null,
+          attempts: [],
+          parsed: null
+        }
+      };
+      const value = chosen.value;
+      const gatedValue = chosen.gatedValue;
       const chainedValue = gatedValue || value || "";
 
       rawResult[field.key] = value;
-      rawResult[extracted.confidenceKey] = extracted.confidence;
+      rawResult[chosen.confidenceKey] = chosen.confidence;
       result[field.key] = gatedValue;
-      fieldConfidences[field.key] = extracted.confidence;
+      fieldConfidences[field.key] = chosen.confidence;
       priorFieldValues[field.key] = chainedValue;
       emitProgress(
         options,
@@ -385,18 +522,35 @@ export async function runEnrichment(input, settings, options = {}) {
         key: field.key,
         label: field.label,
         threshold,
-        prompt,
+        prompt: chosen.prompt || null,
         evidenceCount: fieldEvidence.length,
         rawValue: value,
-        confidence: extracted.confidence,
+        confidence: chosen.confidence,
         gatedValue,
         chainedValue,
-        modelRequestPayload: model.payload,
-        modelRawResponseText: model.rawResponseText,
-        modelRawResponseJson: model.rawResponseJson,
-        modelEndpoint: model.endpointUrl,
-        modelAttempts: model.attempts,
-        modelParsed: model.parsed
+        modelRequestPayload: chosen.model?.payload || null,
+        modelRawResponseText: chosen.model?.rawResponseText || "",
+        modelRawResponseJson: chosen.model?.rawResponseJson || null,
+        modelEndpoint: chosen.model?.endpointUrl || null,
+        modelAttempts: chosen.model?.attempts || [],
+        modelParsed: chosen.model?.parsed || null,
+        passDebug: passDebug.map((pass) => ({
+          passName: pass.passName,
+          ok: pass.ok,
+          shouldRetry: pass.shouldRetry,
+          prompt: pass.prompt,
+          evidenceCount: pass.evidenceCount,
+          rawValue: pass.value,
+          confidence: pass.confidence,
+          gatedValue: pass.gatedValue,
+          error: pass.error || null,
+          modelRequestPayload: pass.model?.payload || null,
+          modelRawResponseText: pass.model?.rawResponseText || "",
+          modelRawResponseJson: pass.model?.rawResponseJson || null,
+          modelEndpoint: pass.model?.endpointUrl || null,
+          modelAttempts: pass.model?.attempts || [],
+          modelParsed: pass.model?.parsed || null
+        }))
       });
     }
 
@@ -466,6 +620,12 @@ export async function runEnrichment(input, settings, options = {}) {
               query: ev.query || null,
               queryTemplate: ev.queryTemplate || null,
               url: ev.url,
+              provider: ev.debug?.provider || null,
+              mode: ev.debug?.mode || null,
+              fallbackUsed: Boolean(ev.debug?.fallbackUsed),
+              timeline: Array.isArray(ev.debug?.timeline) ? ev.debug.timeline : [],
+              aioText: ev.debug?.aioText || null,
+              compactOrganicPreview: ev.debug?.compactOrganicPreview || null,
               rawResponsePreview: ev.debug?.rawResponsePreview || null,
               topLinks: ev.debug?.topLinks || []
             }))
@@ -542,27 +702,37 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
         onProgress
       });
       const priorFieldEvidence = buildFieldSpecificEvidence(priorEvidence, priorField.key);
-      const priorPrompt = buildFieldPrompt({
-        input: cleanInput,
-        field: priorField,
-        evidence: priorFieldEvidence,
-        fieldValues: priorFieldValues
-      });
-
-      const priorModel = await inferEnrichmentDetailed({
-        settings,
-        prompt: priorPrompt,
-        timeoutMs: getModelTimeoutMs(settings),
-        options: { maxTokens: getFieldMaxTokens(priorField, settings) }
-      });
-
-      const priorExtracted = extractFieldFromParsed(priorModel.parsed, priorField.key);
-      let priorValue = priorExtracted.value;
-      if (priorField.key === "top_service") {
-        priorValue = normalizeTopService(priorValue);
-      }
       const priorThreshold = getFieldThreshold(priorField, settings);
-      const priorGated = priorExtracted.confidence >= priorThreshold ? priorValue : null;
+      const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
+      const priorAioEvidence = buildEvidenceForPass(priorFieldEvidence, "aio");
+      const priorOrganicEvidence = buildEvidenceForPass(priorFieldEvidence, "organic");
+      const priorPassPlan =
+        useTwoPass && priorAioEvidence.length
+          ? [
+              { name: "aio", evidence: priorAioEvidence },
+              { name: "organic", evidence: priorOrganicEvidence }
+            ]
+          : [{ name: "organic", evidence: priorOrganicEvidence }];
+
+      let priorSelected = null;
+      const priorPassDebug = [];
+      for (const pass of priorPassPlan) {
+        const passResult = await runFieldExtractionPass({
+          settings,
+          input: cleanInput,
+          field: priorField,
+          fieldValues: priorFieldValues,
+          evidenceForPrompt: pass.evidence.length ? pass.evidence : priorFieldEvidence,
+          threshold: priorThreshold,
+          passName: pass.name
+        });
+        priorPassDebug.push(passResult);
+        priorSelected = passResult;
+        if (!passResult.shouldRetry) break;
+      }
+
+      const priorValue = priorSelected?.value || null;
+      const priorGated = priorSelected?.gatedValue || null;
       const priorChained = priorGated || priorValue || "";
       priorFieldValues[priorField.key] = priorChained;
       priorFieldDebug.push({
@@ -570,7 +740,16 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
         value: priorValue,
         gatedValue: priorGated,
         chainedValue: priorChained,
-        confidence: priorExtracted.confidence
+        confidence: Number(priorSelected?.confidence || 0),
+        passDebug: priorPassDebug.map((pass) => ({
+          passName: pass.passName,
+          ok: pass.ok,
+          shouldRetry: pass.shouldRetry,
+          rawValue: pass.value,
+          confidence: pass.confidence,
+          gatedValue: pass.gatedValue,
+          error: pass.error || null
+        }))
       });
     }
   }
@@ -615,45 +794,78 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
   if (onProgress) onProgress(`Evidence collected: ${evidence.length} item(s)`);
 
   const fieldEvidence = buildFieldSpecificEvidence(evidence, selectedField.key);
-  const prompt = buildFieldPrompt({
-    input: cleanInput,
-    field: selectedField,
-    evidence: fieldEvidence,
-    fieldValues: priorFieldValues
-  });
-  if (onProgress) onProgress("Sending prompt to Qwen");
+  const threshold = getFieldThreshold(selectedField, settings);
+  const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
+  const aioEvidence = buildEvidenceForPass(fieldEvidence, "aio");
+  const organicEvidence = buildEvidenceForPass(fieldEvidence, "organic");
+  const passPlan =
+    useTwoPass && aioEvidence.length
+      ? [
+          { name: "aio", evidence: aioEvidence },
+          { name: "organic", evidence: organicEvidence }
+        ]
+      : [{ name: "organic", evidence: organicEvidence }];
 
-  const model = await inferEnrichmentDetailed({
-    settings,
-    prompt,
-    timeoutMs: getModelTimeoutMs(settings),
-    options: {
-      maxTokens: getFieldMaxTokens(selectedField, settings)
-    }
-  });
-  if (onProgress) onProgress("Received response from Qwen");
+  let selectedPass = null;
+  const passDebug = [];
+  for (const pass of passPlan) {
+    if (onProgress) onProgress(`Sending prompt to Qwen (pass=${pass.name})`);
+    const passResult = await runFieldExtractionPass({
+      settings,
+      input: cleanInput,
+      field: selectedField,
+      fieldValues: priorFieldValues,
+      evidenceForPrompt: pass.evidence.length ? pass.evidence : fieldEvidence,
+      threshold,
+      passName: pass.name
+    });
+    passDebug.push(passResult);
+    selectedPass = passResult;
+    if (onProgress) onProgress(`Received response from Qwen (pass=${pass.name})`);
+    if (!passResult.shouldRetry) break;
+  }
 
-  const extracted = extractFieldFromParsed(model.parsed, selectedField.key);
+  const extracted = {
+    value: selectedPass?.value || null,
+    confidence: Number(selectedPass?.confidence || 0)
+  };
 
   return {
     field: selectedField.key,
     queryTemplate: queryTemplate || null,
-    threshold: getFieldThreshold(selectedField, settings),
+    threshold,
     priorFieldValues,
     priorFieldDebug,
     extracted: {
       value: extracted.value,
       confidence: extracted.confidence
     },
-    prompt,
+    prompt: selectedPass?.prompt || null,
+    passDebug: passDebug.map((pass) => ({
+      passName: pass.passName,
+      ok: pass.ok,
+      shouldRetry: pass.shouldRetry,
+      prompt: pass.prompt,
+      evidenceCount: pass.evidenceCount,
+      rawValue: pass.value,
+      confidence: pass.confidence,
+      gatedValue: pass.gatedValue,
+      error: pass.error || null,
+      modelRequestPayload: pass.model?.payload || null,
+      modelRawResponseText: pass.model?.rawResponseText || "",
+      modelRawResponseJson: pass.model?.rawResponseJson || null,
+      modelEndpoint: pass.model?.endpointUrl || null,
+      modelAttempts: pass.model?.attempts || [],
+      modelParsed: pass.model?.parsed || null
+    })),
     evidence,
     model: {
-      parsed: model.parsed,
-      rawResponseText: model.rawResponseText,
-      rawResponseJson: model.rawResponseJson,
-      endpoint: model.endpointUrl,
-      attempts: model.attempts,
-      requestPayload: model.payload
+      parsed: selectedPass?.model?.parsed || null,
+      rawResponseText: selectedPass?.model?.rawResponseText || "",
+      rawResponseJson: selectedPass?.model?.rawResponseJson || null,
+      endpoint: selectedPass?.model?.endpointUrl || null,
+      attempts: selectedPass?.model?.attempts || [],
+      requestPayload: selectedPass?.model?.payload || null
     }
   };
 }

@@ -247,6 +247,11 @@ function extractTopLinksFromMarkdownText(text) {
 
 function extractParsedLightOrganicItems(parsed) {
   if (!parsed || typeof parsed !== "object") return [];
+
+  if (Array.isArray(parsed)) {
+    const first = parsed[0];
+    if (first && typeof first === "object" && Array.isArray(first.organic)) return first.organic;
+  }
   if (Array.isArray(parsed.organic)) return parsed.organic;
   if (Array.isArray(parsed.results)) return parsed.results;
   if (parsed.data && Array.isArray(parsed.data.organic)) return parsed.data.organic;
@@ -262,7 +267,109 @@ function buildCompactOrganicLines(organicItems, limit = 10) {
   });
 }
 
-async function fetchBrightDataSerpResult(searchUrl, settings, timeoutMs) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(String(text || ""));
+  } catch {
+    return null;
+  }
+}
+
+function extractAioText(parsed) {
+  if (!parsed || typeof parsed !== "object") return "";
+
+  const candidates = [];
+  if (Array.isArray(parsed)) {
+    for (const item of parsed.slice(0, 3)) {
+      if (item && typeof item === "object" && typeof item.aio_text === "string") {
+        candidates.push(item.aio_text);
+      }
+    }
+  }
+  if (typeof parsed.aio_text === "string") candidates.push(parsed.aio_text);
+  if (parsed.data && typeof parsed.data.aio_text === "string") candidates.push(parsed.data.aio_text);
+
+  for (const value of candidates) {
+    const cleaned = String(value || "").trim();
+    if (cleaned) return cleaned;
+  }
+  return "";
+}
+
+function buildBrightDataEvidence({
+  plan,
+  searchUrl,
+  mode,
+  rawText,
+  parsedPayload,
+  timeline = [],
+  fallbackUsed = false
+}) {
+  const parsedLight = extractParsedLightOrganicItems(parsedPayload);
+  const compactOrganicLines = buildCompactOrganicLines(parsedLight, 10);
+  const compactOrganicText = compactOrganicLines.join("\n\n");
+  const aioText = extractAioText(parsedPayload);
+
+  const html = String(rawText || "");
+  const serpText = stripHtmlToText(html);
+  const linksFromHtml = extractTopLinksFromHtml(html);
+  const linksFromMarkdown = extractTopLinksFromMarkdownText(html);
+  const organicLinks = parsedLight
+    .map((item) => ({
+      href: item.link || item.url || "",
+      text: item.title || item.text || item.description || ""
+    }))
+    .filter((item) => item.href);
+  const links = linksFromHtml.length
+    ? linksFromHtml
+    : organicLinks.length
+    ? organicLinks
+    : linksFromMarkdown;
+
+  const topLinksText = links
+    .slice(0, 10)
+    .map((item, idx) => `${idx + 1}. ${item.text} | ${item.href}`)
+    .join("\n");
+
+  let snippet = `Search query: ${plan.query}\nSearch URL: ${searchUrl}`;
+  if (aioText) {
+    snippet += `\nAIO text:\n${truncate(aioText, 2200)}`;
+  }
+  if (compactOrganicText) {
+    snippet += `\nTop organic results (compact):\n${compactOrganicText}`;
+  } else {
+    snippet += `\nTop links:\n${topLinksText}\n\nSERP text:\n${truncate(serpText, 2600)}`;
+  }
+
+  return {
+    sourceType: plan.type,
+    field: plan.field || null,
+    query: plan.query,
+    queryTemplate: plan.queryTemplate || null,
+    url: searchUrl,
+    snippet: truncate(snippet, 4200),
+    debug: {
+      provider: "brightdata",
+      mode,
+      fallbackUsed,
+      timeline,
+      aioText: truncate(aioText, 12000),
+      parsedLightOrganicCount: parsedLight.length,
+      compactOrganicPreview: truncate(compactOrganicText, 12000),
+      rawResponsePreview: truncate(
+        rawText || (parsedPayload ? JSON.stringify(parsedPayload).slice(0, 50000) : ""),
+        20000
+      ),
+      topLinks: links.slice(0, 10)
+    }
+  };
+}
+
+async function fetchBrightDataRequestMode(searchUrl, settings, timeoutMs) {
   if (!settings.brightDataApiToken) {
     throw new Error("Bright Data API token is missing");
   }
@@ -291,36 +398,27 @@ async function fetchBrightDataSerpResult(searchUrl, settings, timeoutMs) {
       throw new Error(`Bright Data HTTP ${response.status}: ${truncate(raw, 240)}`);
     }
 
-    const contentType = (response.headers.get("content-type") || "").toLowerCase();
-    let parsed = null;
-    if (contentType.includes("application/json")) {
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        parsed = null;
-      }
-
-      if (typeof parsed === "string") {
-        return { rawText: parsed, parsedJson: null };
-      }
-      if (parsed && typeof parsed === "object") {
-        return {
-          rawText:
-            typeof parsed.body === "string"
-              ? parsed.body
-              : typeof parsed.result === "string"
-              ? parsed.result
-              : typeof parsed.html === "string"
-              ? parsed.html
-              : typeof parsed.raw === "string"
-              ? parsed.raw
-              : raw,
-          parsedJson: parsed
-        };
-      }
+    const parsed = safeJsonParse(raw);
+    if (typeof parsed === "string") {
+      return { rawText: parsed, parsedPayload: null };
+    }
+    if (parsed && typeof parsed === "object") {
+      return {
+        rawText:
+          typeof parsed.body === "string"
+            ? parsed.body
+            : typeof parsed.result === "string"
+            ? parsed.result
+            : typeof parsed.html === "string"
+            ? parsed.html
+            : typeof parsed.raw === "string"
+            ? parsed.raw
+            : raw,
+        parsedPayload: parsed
+      };
     }
 
-    return { rawText: raw, parsedJson: parsed };
+    return { rawText: raw, parsedPayload: parsed };
   } catch (error) {
     if (error?.name === "AbortError") {
       throw new Error(`Bright Data timeout after ${timeoutMs}ms`);
@@ -331,41 +429,198 @@ async function fetchBrightDataSerpResult(searchUrl, settings, timeoutMs) {
   }
 }
 
-async function collectFromBrightDataSerp(plan, settings, timeoutMs) {
-  const searchUrl = buildSearchUrl(plan.query, "google");
-  const bd = await fetchBrightDataSerpResult(searchUrl, settings, timeoutMs);
-  const html = bd.rawText;
-  const parsedLight = extractParsedLightOrganicItems(bd.parsedJson);
-  const compactOrganicLines = buildCompactOrganicLines(parsedLight, 10);
-  const compactOrganicText = compactOrganicLines.join("\n\n");
-  const serpText = stripHtmlToText(html);
-  const linksFromHtml = extractTopLinksFromHtml(html);
-  const links =
-    linksFromHtml.length > 0 ? linksFromHtml : extractTopLinksFromMarkdownText(String(html || ""));
+async function fetchBrightDataDatasetMode(searchUrl, plan, settings, timeoutMs, onProgress) {
+  if (!settings.brightDataApiToken) {
+    throw new Error("Bright Data API token is missing");
+  }
 
-  const topLinksText = links.slice(0, 10).map((item, idx) => `${idx + 1}. ${item.text} | ${item.href}`).join("\n");
-  const snippet = compactOrganicText
-    ? `Search query: ${plan.query}\nSearch URL: ${searchUrl}\nTop organic results (compact):\n${compactOrganicText}`
-    : `Search query: ${plan.query}\nSearch URL: ${searchUrl}\nTop links:\n${topLinksText}\n\nSERP text:\n${truncate(
-        serpText,
-        2600
-      )}`;
+  const datasetId = String(settings.brightDataDatasetId || "gd_mfz5x93lmsjjjylob").trim();
+  if (!datasetId) {
+    throw new Error("Bright Data dataset id is missing");
+  }
 
-  return {
-    sourceType: plan.type,
-    field: plan.field || null,
-    query: plan.query,
-    queryTemplate: plan.queryTemplate || null,
-    url: searchUrl,
-    snippet: truncate(snippet, 4200),
-    debug: {
-      provider: "brightdata",
-      parsedLightOrganicCount: parsedLight.length,
-      compactOrganicPreview: truncate(compactOrganicText, 4000),
-      rawResponsePreview: truncate(html, 12000),
-      topLinks: links.slice(0, 10)
+  const initialWaitMs = Math.max(1000, Number(settings.brightDataDatasetInitialWaitMs || 15000));
+  const pollIntervalMs = Math.max(1000, Number(settings.brightDataDatasetPollIntervalMs || 30000));
+  const maxWaitMs = Math.max(5000, Number(settings.brightDataDatasetMaxWaitMs || 120000));
+
+  const timeline = [];
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const triggerUrl = `https://api.brightdata.com/datasets/v3/trigger?dataset_id=${encodeURIComponent(
+      datasetId
+    )}&include_errors=true`;
+    const triggerPayload = [
+      {
+        url: "https://www.google.com/",
+        keyword: plan.query,
+        language: "en",
+        country: "US",
+        start_page: 1,
+        end_page: 1,
+        collapse_aio: false
+      }
+    ];
+    timeline.push({
+      at: new Date().toISOString(),
+      step: "trigger_request",
+      url: triggerUrl,
+      payload: triggerPayload
+    });
+    if (onProgress) onProgress(`BrightData dataset trigger for "${plan.query}"`);
+
+    const triggerRes = await fetch(triggerUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${settings.brightDataApiToken}`
+      },
+      body: JSON.stringify(triggerPayload),
+      signal: controller.signal
+    });
+
+    const triggerRaw = await triggerRes.text();
+    const triggerJson = safeJsonParse(triggerRaw);
+    timeline.push({
+      at: new Date().toISOString(),
+      step: "trigger_response",
+      status: triggerRes.status,
+      bodyPreview: truncate(triggerRaw, 1000)
+    });
+    if (!triggerRes.ok) {
+      throw new Error(`Bright Data dataset trigger HTTP ${triggerRes.status}: ${truncate(triggerRaw, 240)}`);
     }
-  };
+
+    const snapshotId = String(
+      triggerJson?.snapshot_id || triggerJson?.id || triggerJson?.snapshotId || ""
+    ).trim();
+    if (!snapshotId) {
+      throw new Error("Bright Data dataset trigger did not return snapshot_id");
+    }
+    timeline.push({
+      at: new Date().toISOString(),
+      step: "snapshot_id",
+      snapshotId
+    });
+
+    if (onProgress) onProgress(`BrightData snapshot ${snapshotId} created. Waiting ${initialWaitMs}ms`);
+    await sleep(initialWaitMs);
+
+    const startedAt = Date.now();
+    const snapshotUrl = `https://api.brightdata.com/datasets/v3/snapshot/${encodeURIComponent(
+      snapshotId
+    )}?format=json`;
+
+    while (Date.now() - startedAt <= maxWaitMs) {
+      const elapsed = Date.now() - startedAt;
+      const snapRes = await fetch(snapshotUrl, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${settings.brightDataApiToken}`
+        },
+        signal: controller.signal
+      });
+      const snapRaw = await snapRes.text();
+      const snapJson = safeJsonParse(snapRaw);
+      const status = String(snapJson?.status || "").toLowerCase();
+
+      timeline.push({
+        at: new Date().toISOString(),
+        step: "snapshot_poll",
+        statusCode: snapRes.status,
+        elapsedMs: elapsed,
+        status: status || null,
+        bodyPreview: truncate(snapRaw, 1000)
+      });
+
+      if (!snapRes.ok) {
+        throw new Error(`Bright Data snapshot HTTP ${snapRes.status}: ${truncate(snapRaw, 240)}`);
+      }
+
+      if (status === "running" || status === "collecting" || status === "digesting" || status === "starting") {
+        if (onProgress) onProgress(`BrightData snapshot ${snapshotId} status=${status} elapsed=${elapsed}ms`);
+        await sleep(pollIntervalMs);
+        continue;
+      }
+
+      const hasData = Array.isArray(snapJson) || Array.isArray(snapJson?.data) || Array.isArray(snapJson?.results);
+      if (hasData) {
+        if (onProgress) onProgress(`BrightData snapshot ${snapshotId} ready`);
+        return { parsedPayload: snapJson, rawText: snapRaw, timeline, snapshotId };
+      }
+
+      if (status === "failed") {
+        throw new Error(`Bright Data snapshot failed: ${truncate(snapRaw, 240)}`);
+      }
+
+      // Unexpected shape, still return so downstream can extract whatever exists.
+      return { parsedPayload: snapJson, rawText: snapRaw, timeline, snapshotId };
+    }
+
+    throw new Error(`Bright Data snapshot timeout after ${maxWaitMs}ms`);
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Bright Data dataset mode timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress) {
+  const searchUrl = buildSearchUrl(plan.query, "google");
+  const mode = String(settings.brightDataSerpMode || "request").toLowerCase() === "dataset" ? "dataset" : "request";
+  const fallbackToRequest = Boolean(settings.brightDataDatasetFallbackToRequest);
+
+  if (mode === "dataset") {
+    try {
+      const datasetRes = await fetchBrightDataDatasetMode(searchUrl, plan, settings, timeoutMs, onProgress);
+      return buildBrightDataEvidence({
+        plan,
+        searchUrl,
+        mode,
+        rawText: datasetRes.rawText,
+        parsedPayload: datasetRes.parsedPayload,
+        timeline: datasetRes.timeline,
+        fallbackUsed: false
+      });
+    } catch (error) {
+      const timeline = [
+        {
+          at: new Date().toISOString(),
+          step: "dataset_error",
+          error: String(error?.message || error)
+        }
+      ];
+      if (!fallbackToRequest) {
+        throw error;
+      }
+      if (onProgress) onProgress(`Dataset mode failed, falling back to /request: ${String(error?.message || error)}`);
+      const requestRes = await fetchBrightDataRequestMode(searchUrl, settings, timeoutMs);
+      return buildBrightDataEvidence({
+        plan,
+        searchUrl,
+        mode: "request_fallback",
+        rawText: requestRes.rawText,
+        parsedPayload: requestRes.parsedPayload,
+        timeline,
+        fallbackUsed: true
+      });
+    }
+  }
+
+  const requestRes = await fetchBrightDataRequestMode(searchUrl, settings, timeoutMs);
+  return buildBrightDataEvidence({
+    plan,
+    searchUrl,
+    mode: "request",
+    rawText: requestRes.rawText,
+    parsedPayload: requestRes.parsedPayload,
+    timeline: [],
+    fallbackUsed: false
+  });
 }
 
 async function collectFromDirectUrl(page, url, sourceType, timeoutMs, field) {
@@ -484,13 +739,14 @@ async function runPlanWithRetries({
   timeoutMs,
   onProgress
 }) {
-  const maxAttempts = Math.max(1, Number(settings.proxyRetryCount || 2) + 1);
-
   const shouldUseBrightDataSerp =
     plan.mode === "search" &&
     plan.engine === "google" &&
     Boolean(settings.useBrightDataSerp) &&
     Boolean(settings.brightDataApiToken);
+  const maxAttempts = shouldUseBrightDataSerp
+    ? 1
+    : Math.max(1, Number(settings.proxyRetryCount || 2) + 1);
 
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -501,7 +757,7 @@ async function runPlanWithRetries({
     }
     if (shouldUseBrightDataSerp) {
       try {
-        return await collectFromBrightDataSerp(plan, settings, timeoutMs);
+        return await collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress);
       } catch (error) {
         lastError = error;
         if (onProgress) onProgress(`Attempt failed (${plan.type}): ${String(error?.message || error)}`);
@@ -548,10 +804,31 @@ async function runPlanWithRetries({
     snippet: `Source failed: ${lastError ? String(lastError.message || lastError) : "unknown error"}`,
     debug: {
       provider: shouldUseBrightDataSerp ? "brightdata" : "playwright",
+      mode: shouldUseBrightDataSerp
+        ? String(settings.brightDataSerpMode || "request").toLowerCase()
+        : "playwright",
       rawResponsePreview: "",
       topLinks: []
     }
   };
+}
+
+function resolveEvidenceTimeoutForPlan(plan, settings, baseTimeoutMs) {
+  const base = Math.max(5000, Number(baseTimeoutMs || 45000));
+  const isBrightDataDatasetPlan =
+    plan.mode === "search" &&
+    plan.engine === "google" &&
+    Boolean(settings.useBrightDataSerp) &&
+    Boolean(settings.brightDataApiToken) &&
+    String(settings.brightDataSerpMode || "request").toLowerCase() === "dataset";
+
+  if (!isBrightDataDatasetPlan) return base;
+
+  const datasetBudget =
+    Number(settings.brightDataDatasetInitialWaitMs || 15000) +
+    Number(settings.brightDataDatasetMaxWaitMs || 120000) +
+    30000;
+  return Math.max(base, datasetBudget);
 }
 
 export async function collectEvidence(input, settings, options = {}) {
@@ -588,7 +865,7 @@ export async function collectEvidence(input, settings, options = {}) {
       proxies,
       proxyCursorRef,
       fixedRunProxy,
-      timeoutMs,
+      timeoutMs: resolveEvidenceTimeoutForPlan(plan, settings, timeoutMs),
       onProgress: options.onProgress
     });
     evidences.push(evidence);
