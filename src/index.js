@@ -8,7 +8,7 @@ import { getSettings, updateSettings } from "./settings.js";
 import { runEnrichment, runFieldProbe } from "./enrich.js";
 import { browserManager } from "./browserManager.js";
 import { runModelCompatibilityTest, fetchOllamaModelTags } from "./model.js";
-import { buildNullResultFromFields, migrateLegacyFields } from "./enrichmentFields.js";
+import { migrateLegacyFields } from "./enrichmentFields.js";
 import { migrateInputFields } from "./inputFields.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -134,6 +134,34 @@ function validateRequiredInput(input, settings) {
   if (!missing.length) return;
   const label = missing.map((field) => field.label || field.key).join(", ");
   throw new Error(`Missing required input fields: ${label}`);
+}
+
+function isTimeoutLikeError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return (
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("operation was aborted") ||
+    message.includes("aborterror")
+  );
+}
+
+function mapEnrichmentErrorToHttp(error) {
+  const message = String(error?.message || error || "Unknown error");
+  if (message.startsWith("Missing required input fields:")) {
+    return { status: 400, body: { ok: false, error: message } };
+  }
+  if (isTimeoutLikeError(error)) {
+    return {
+      status: 504,
+      body: {
+        ok: false,
+        error: message,
+        code: "UPSTREAM_TIMEOUT"
+      }
+    };
+  }
+  return { status: 500, body: { ok: false, error: message } };
 }
 
 function getEnabledEnrichmentFields(settings) {
@@ -371,11 +399,8 @@ app.post("/api/enrich", async (req, res) => {
     res.json(data.result);
   } catch (error) {
     console.error("enrich failed:", error);
-    const settings = await getSettings();
-    const fields = migrateLegacyFields(settings).filter((field) => field.enabled);
-    res.status(200).json({
-      ...buildNullResultFromFields(fields)
-    });
+    const mapped = mapEnrichmentErrorToHttp(error);
+    res.status(mapped.status).json(mapped.body);
   }
 });
 
@@ -739,11 +764,8 @@ app.post("/api/public/enrich", requirePublicApiKey, async (req, res) => {
     }
     res.json(data.result);
   } catch (error) {
-    if (String(error?.message || "").startsWith("Missing required input fields:")) {
-      res.status(400).json({ ok: false, error: String(error.message || error) });
-      return;
-    }
-    res.status(500).json({ ok: false, error: String(error?.message || error) });
+    const mapped = mapEnrichmentErrorToHttp(error);
+    res.status(mapped.status).json(mapped.body);
   }
 });
 
@@ -752,11 +774,20 @@ app.get("*", (_req, res) => {
 });
 
 const port = Number(process.env.PORT || 8787);
+const serverRequestTimeoutMs = Math.max(30000, Number(process.env.SERVER_REQUEST_TIMEOUT_MS || 420000));
+const serverHeadersTimeoutMs = Math.max(
+  serverRequestTimeoutMs + 5000,
+  Number(process.env.SERVER_HEADERS_TIMEOUT_MS || serverRequestTimeoutMs + 5000)
+);
+const serverKeepAliveTimeoutMs = Math.max(5000, Number(process.env.SERVER_KEEP_ALIVE_TIMEOUT_MS || 65000));
 async function start() {
   await ensureDatabaseSchema();
-  app.listen(port, () => {
+  const server = app.listen(port, () => {
     console.log(`Data_Capture_Tool listening on http://localhost:${port}`);
   });
+  server.requestTimeout = serverRequestTimeoutMs;
+  server.headersTimeout = serverHeadersTimeoutMs;
+  server.keepAliveTimeout = serverKeepAliveTimeoutMs;
 }
 
 start().catch((error) => {

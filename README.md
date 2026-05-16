@@ -74,6 +74,7 @@ Notes:
 - If your model endpoint is protected, set either `MODEL_API_KEY` or `MODEL_BASIC_AUTH` (`user:pass`).
 - For Bright Data, set `BRIGHT_DATA_API_TOKEN` and `BRIGHT_DATA_ZONE` (example zone: `serp_api1`).
 - Use the UI `Compatibility Tests` panel to verify model JSON/schema behavior before live enrich runs.
+- For sync enrichment in dataset mode, set caller timeout to at least 5-7 minutes. The API now returns `504` on upstream timeouts instead of silent all-null responses.
 
 ## Deploy On Model Server (One-Liner)
 1. Clone + install + run (single command):
