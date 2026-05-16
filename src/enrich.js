@@ -207,6 +207,20 @@ function buildEvidenceForPass(fieldEvidence, passType) {
   return out;
 }
 
+function summarizeAioForEvidence(evidenceList) {
+  const items = Array.isArray(evidenceList) ? evidenceList : [];
+  const withAio = items.filter((item) => String(item?.debug?.aioText || "").trim().length > 0);
+  const totalAioChars = withAio.reduce(
+    (sum, item) => sum + String(item?.debug?.aioText || "").trim().length,
+    0
+  );
+  return {
+    total: items.length,
+    withAio: withAio.length,
+    totalAioChars
+  };
+}
+
 function shouldUseBrightDataAioTwoPass(settings) {
   return (
     Boolean(settings.useBrightDataSerp) &&
@@ -441,6 +455,13 @@ export async function runEnrichment(input, settings, options = {}) {
       }
 
       const fieldEvidence = buildFieldSpecificEvidence(collectedForField, field.key);
+      const aioSummary = summarizeAioForEvidence(fieldEvidence);
+      emitProgress(
+        options,
+        `Field ${fieldIndex + 1}/${totalFields}: evidence summary for ${field.key} sources=${aioSummary.total} aio_sources=${aioSummary.withAio} aio_chars=${aioSummary.totalAioChars}`,
+        Math.min(95, fieldStartProgress + 3),
+        { stage: "field_evidence_summary", field: field.key }
+      );
       emitProgress(
         options,
         `Field ${fieldIndex + 1}/${totalFields}: sending prompt for ${field.key}`,
@@ -479,6 +500,14 @@ export async function runEnrichment(input, settings, options = {}) {
         });
         passDebug.push(passResult);
         selectedPass = passResult;
+        emitProgress(
+          options,
+          `Field ${fieldIndex + 1}/${totalFields}: pass=${pass.name} value=${passResult.value ? "yes" : "no"} confidence=${Number(
+            passResult.confidence || 0
+          ).toFixed(2)} retry=${passResult.shouldRetry ? "yes" : "no"}`,
+          Math.min(96, fieldStartProgress + 10),
+          { stage: "field_model_pass_result", field: field.key, pass: pass.name }
+        );
         if (!passResult.shouldRetry) break;
       }
 
@@ -550,7 +579,8 @@ export async function runEnrichment(input, settings, options = {}) {
           modelEndpoint: pass.model?.endpointUrl || null,
           modelAttempts: pass.model?.attempts || [],
           modelParsed: pass.model?.parsed || null
-        }))
+        })),
+        aioSummary
       });
     }
 
@@ -794,6 +824,12 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
   if (onProgress) onProgress(`Evidence collected: ${evidence.length} item(s)`);
 
   const fieldEvidence = buildFieldSpecificEvidence(evidence, selectedField.key);
+  const aioSummary = summarizeAioForEvidence(fieldEvidence);
+  if (onProgress) {
+    onProgress(
+      `Field evidence summary: field=${selectedField.key} sources=${aioSummary.total} aio_sources=${aioSummary.withAio} aio_chars=${aioSummary.totalAioChars}`
+    );
+  }
   const threshold = getFieldThreshold(selectedField, settings);
   const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
   const aioEvidence = buildEvidenceForPass(fieldEvidence, "aio");
@@ -821,7 +857,13 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
     });
     passDebug.push(passResult);
     selectedPass = passResult;
-    if (onProgress) onProgress(`Received response from Qwen (pass=${pass.name})`);
+    if (onProgress) {
+      onProgress(
+        `Received response from Qwen (pass=${pass.name}) value=${passResult.value ? "yes" : "no"} confidence=${Number(
+          passResult.confidence || 0
+        ).toFixed(2)} retry=${passResult.shouldRetry ? "yes" : "no"}`
+      );
+    }
     if (!passResult.shouldRetry) break;
   }
 
@@ -858,6 +900,7 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
       modelAttempts: pass.model?.attempts || [],
       modelParsed: pass.model?.parsed || null
     })),
+    aioSummary,
     evidence,
     model: {
       parsed: selectedPass?.model?.parsed || null,

@@ -267,6 +267,20 @@ function buildCompactOrganicLines(organicItems, limit = 10) {
   });
 }
 
+function summarizeEvidenceDebug(evidence) {
+  const aioText = String(evidence?.debug?.aioText || "").trim();
+  const mode = String(evidence?.debug?.mode || "");
+  const provider = String(evidence?.debug?.provider || "");
+  const organicCount = Number(evidence?.debug?.parsedLightOrganicCount || 0);
+  return {
+    provider,
+    mode,
+    organicCount,
+    aioPresent: Boolean(aioText),
+    aioLength: aioText.length
+  };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
@@ -577,7 +591,7 @@ async function collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress) 
   if (mode === "dataset") {
     try {
       const datasetRes = await fetchBrightDataDatasetMode(searchUrl, plan, settings, timeoutMs, onProgress);
-      return buildBrightDataEvidence({
+      const evidence = buildBrightDataEvidence({
         plan,
         searchUrl,
         mode,
@@ -586,6 +600,15 @@ async function collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress) 
         timeline: datasetRes.timeline,
         fallbackUsed: false
       });
+      const summary = summarizeEvidenceDebug(evidence);
+      if (onProgress) {
+        onProgress(
+          `BrightData parsed: field=${plan.field || "unknown"} mode=${summary.mode} aio=${
+            summary.aioPresent ? "yes" : "no"
+          } aio_len=${summary.aioLength} organic=${summary.organicCount}`
+        );
+      }
+      return evidence;
     } catch (error) {
       const timeline = [
         {
@@ -599,7 +622,7 @@ async function collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress) 
       }
       if (onProgress) onProgress(`Dataset mode failed, falling back to /request: ${String(error?.message || error)}`);
       const requestRes = await fetchBrightDataRequestMode(searchUrl, settings, timeoutMs);
-      return buildBrightDataEvidence({
+      const evidence = buildBrightDataEvidence({
         plan,
         searchUrl,
         mode: "request_fallback",
@@ -608,11 +631,20 @@ async function collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress) 
         timeline,
         fallbackUsed: true
       });
+      const summary = summarizeEvidenceDebug(evidence);
+      if (onProgress) {
+        onProgress(
+          `BrightData parsed: field=${plan.field || "unknown"} mode=${summary.mode} aio=${
+            summary.aioPresent ? "yes" : "no"
+          } aio_len=${summary.aioLength} organic=${summary.organicCount}`
+        );
+      }
+      return evidence;
     }
   }
 
   const requestRes = await fetchBrightDataRequestMode(searchUrl, settings, timeoutMs);
-  return buildBrightDataEvidence({
+  const evidence = buildBrightDataEvidence({
     plan,
     searchUrl,
     mode: "request",
@@ -621,6 +653,15 @@ async function collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress) 
     timeline: [],
     fallbackUsed: false
   });
+  const summary = summarizeEvidenceDebug(evidence);
+  if (onProgress) {
+    onProgress(
+      `BrightData parsed: field=${plan.field || "unknown"} mode=${summary.mode} aio=${
+        summary.aioPresent ? "yes" : "no"
+      } aio_len=${summary.aioLength} organic=${summary.organicCount}`
+    );
+  }
+  return evidence;
 }
 
 async function collectFromDirectUrl(page, url, sourceType, timeoutMs, field) {
@@ -870,10 +911,13 @@ export async function collectEvidence(input, settings, options = {}) {
     });
     evidences.push(evidence);
     if (options.onProgress) {
+      const dbg = summarizeEvidenceDebug(evidence);
       options.onProgress(
         `Finished plan: field=${plan.field || "unknown"} type=${plan.type} snippet_len=${String(
           evidence?.snippet?.length || 0
-        )}`
+        )} provider=${dbg.provider || "unknown"} mode=${dbg.mode || "n/a"} aio=${
+          dbg.aioPresent ? "yes" : "no"
+        } aio_len=${dbg.aioLength} organic=${dbg.organicCount}`
       );
     }
   }
