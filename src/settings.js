@@ -52,6 +52,36 @@ const DEFAULT_SETTINGS = Object.freeze({
 });
 
 const SETTINGS_KEY = "data_capture_tool_settings";
+const LEGACY_SETTINGS_KEY = "enricher_settings";
+
+function parseSettingsJson(valueJson) {
+  try {
+    return JSON.parse(valueJson || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function shouldMigrateLegacyEnrichmentFields(currentSettings, legacySettings) {
+  const currentFields = Array.isArray(currentSettings?.enrichmentFields)
+    ? currentSettings.enrichmentFields
+    : [];
+  const legacyFields = Array.isArray(legacySettings?.enrichmentFields)
+    ? legacySettings.enrichmentFields
+    : [];
+
+  if (!legacyFields.length) return false;
+
+  const currentKeys = new Set(currentFields.map((field) => String(field?.key || "").trim()));
+  const legacyKeys = new Set(legacyFields.map((field) => String(field?.key || "").trim()));
+
+  // If legacy has richer/custom fields (e.g. owner_name, owner_email) and current does not, migrate.
+  if (legacyKeys.has("owner_name") && !currentKeys.has("owner_name")) return true;
+  if (legacyKeys.has("owner_email") && !currentKeys.has("owner_email")) return true;
+  if (legacyFields.length > currentFields.length) return true;
+
+  return false;
+}
 
 export function getDefaultSettings() {
   return {
@@ -62,20 +92,48 @@ export function getDefaultSettings() {
 }
 
 export async function getSettings() {
-  const row = await prisma.appSetting.findUnique({ where: { key: SETTINGS_KEY } });
+  const [row, legacyRow] = await Promise.all([
+    prisma.appSetting.findUnique({ where: { key: SETTINGS_KEY } }),
+    prisma.appSetting.findUnique({ where: { key: LEGACY_SETTINGS_KEY } })
+  ]);
+
+  // First run after rename: no new key yet, but legacy settings exist.
+  if (!row && legacyRow) {
+    const fromLegacy = {
+      ...getDefaultSettings(),
+      ...parseSettingsJson(legacyRow.valueJson)
+    };
+    fromLegacy.inputFields = migrateInputFields(fromLegacy);
+    fromLegacy.enrichmentFields = migrateLegacyFields(fromLegacy);
+    await prisma.appSetting.upsert({
+      where: { key: SETTINGS_KEY },
+      create: { key: SETTINGS_KEY, valueJson: JSON.stringify(fromLegacy) },
+      update: { valueJson: JSON.stringify(fromLegacy) }
+    });
+    return fromLegacy;
+  }
+
   if (!row) return getDefaultSettings();
 
-  let parsed = {};
-  try {
-    parsed = JSON.parse(row.valueJson);
-  } catch {
-    parsed = {};
-  }
+  const parsed = parseSettingsJson(row.valueJson);
 
   const merged = {
     ...getDefaultSettings(),
     ...parsed
   };
+
+  if (legacyRow) {
+    const legacyParsed = parseSettingsJson(legacyRow.valueJson);
+    if (shouldMigrateLegacyEnrichmentFields(merged, legacyParsed)) {
+      merged.enrichmentFields = migrateLegacyFields(legacyParsed);
+      await prisma.appSetting.upsert({
+        where: { key: SETTINGS_KEY },
+        create: { key: SETTINGS_KEY, valueJson: JSON.stringify(merged) },
+        update: { valueJson: JSON.stringify(merged) }
+      });
+    }
+  }
+
   merged.inputFields = migrateInputFields(merged);
   merged.enrichmentFields = migrateLegacyFields(merged);
   return merged;
