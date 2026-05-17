@@ -17,6 +17,7 @@ body {
   font-family: "Space Grotesk", sans-serif;
   background: radial-gradient(circle at 20% 20%, #fff8ea 0%, var(--bg) 40%, #efe8da 100%);
   color: var(--ink);
+  overflow-x: hidden;
 }
 
 .bg-shape {
@@ -45,6 +46,7 @@ body {
 
 .layout {
   width: min(1120px, 100% - 28px);
+  max-width: 1120px;
   margin: 24px auto 48px;
   display: grid;
   gap: 16px;
@@ -68,6 +70,9 @@ body {
   padding: 16px;
   box-shadow: 0 7px 20px rgba(30, 27, 20, 0.07);
   animation: riseIn 340ms ease;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 h2 {
@@ -85,6 +90,10 @@ h3 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 10px;
+}
+
+.grid > * {
+  min-width: 0;
 }
 
 label {
@@ -107,6 +116,9 @@ select {
   border-radius: 9px;
   padding: 10px;
   background: #fffefb;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 textarea {
@@ -171,6 +183,8 @@ button.ghost {
   background: #fffefb;
   display: grid;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .field-card-summary {
@@ -217,6 +231,11 @@ pre {
   background: #fff;
   font-family: "IBM Plex Mono", monospace;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
 }
 
 .meta {
@@ -243,6 +262,9 @@ pre {
 }
 
 .table-wrap {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow: auto;
 }
 
