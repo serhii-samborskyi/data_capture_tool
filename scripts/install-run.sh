@@ -40,10 +40,13 @@ else
   echo "[3/5] .env already exists"
 fi
 
-echo "[4/5] Restarting app on port $PORT_VALUE"
+echo "[4/6] Preparing database schema + settings migration"
+node -e 'import { ensureDatabaseSchema } from "./src/db.js"; import { getSettings } from "./src/settings.js"; await ensureDatabaseSchema(); await getSettings(); console.log("Database ready");'
+
+echo "[5/6] Restarting app on port $PORT_VALUE"
 ./restart.sh "$PORT_VALUE"
 
-echo "[5/5] Done"
+echo "[6/6] Done"
 echo "UI:    http://localhost:$PORT_VALUE"
 echo "Docs:  http://localhost:$PORT_VALUE/api/public/docs"
 echo "OpenAPI: http://localhost:$PORT_VALUE/api/public/openapi.json"

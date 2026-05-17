@@ -85,6 +85,7 @@ Notes:
 ```bash
 git clone <YOUR_GITHUB_REPO_URL> data_capture_tool && cd data_capture_tool && bash scripts/install-run.sh 8787
 ```
+This deploy script also prepares SQLite schema and runs settings migration (including legacy `enricher_settings` -> `data_capture_tool_settings` prompt migration).
 
 2. Open:
 - UI: `http://<SERVER_IP>:8787`
