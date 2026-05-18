@@ -116,6 +116,7 @@ function makeNewField() {
     key: `field_${idx}`,
     label: `Field ${idx}`,
     enabled: true,
+    evidenceSourceField: null,
     queryTemplates: "{{company}} {{city}} {{state}}",
     promptTemplate:
       "Find ${field.label} from provided search evidence only.\\n\\nInput:\\nCompany: ${input.company}\\nCity: ${input.city}\\nState: ${input.state}\\nWebsite: ${input.website}\\n\\nRules:\\n- Return ONLY valid JSON. No markdown.\\n- Do not guess.\\n- Use null when unknown.\\n\\nEvidence:\\n${evidenceLines}\\n\\nReturn exactly:\\n{\\n  \\\"field_name\\\": null,\\n  \\\"field_name_confidence\\\": 0\\n}",
@@ -244,6 +245,7 @@ function syncFieldStateFromDom() {
       key,
       label,
       enabled: Boolean(read("enabled")?.checked),
+      evidenceSourceField: String(read("evidenceSourceField")?.value || "").trim() || null,
       queryTemplates: read("queryTemplates")?.value || "",
       promptTemplate: read("promptTemplate")?.value || "",
       confidenceThreshold: confidenceRaw === "" ? null : Number(confidenceRaw),
@@ -262,6 +264,19 @@ function renderEnrichmentFields() {
   enrichmentFieldsList.innerHTML = enrichmentFieldsState
     .map((field, idx) => {
       const statusText = field.enabled !== false ? "enabled" : "disabled";
+      const reuseOptions = [
+        `<option value="">Own queries (use Query Templates)</option>`,
+        ...enrichmentFieldsState
+          .filter((item) => item.key && item.key !== field.key)
+          .map((item) => {
+            const label = item.label || item.key;
+            const selected = String(field.evidenceSourceField || "") === String(item.key) ? "selected" : "";
+            return `<option value="${escapeHtml(item.key)}" ${selected}>${escapeHtml(label)} (${escapeHtml(
+              item.key
+            )})</option>`;
+          })
+      ].join("");
+      const usesSharedEvidence = Boolean(field.evidenceSourceField);
       return `
       <details class="field-card" data-field-index="${idx}">
         <summary class="field-card-summary">
@@ -294,9 +309,13 @@ function renderEnrichmentFields() {
               <input data-prop="enabled" type="checkbox" ${field.enabled !== false ? "checked" : ""} />
               Enabled
             </label>
+            <label>
+              Use Evidence From Field
+              <select data-prop="evidenceSourceField">${reuseOptions}</select>
+            </label>
           </div>
           <label>
-            Query Templates (one per line)
+            Query Templates (one per line) ${usesSharedEvidence ? "(ignored while reusing evidence)" : ""}
             <textarea data-prop="queryTemplates" rows="3">${escapeHtml(field.queryTemplates || "")}</textarea>
           </label>
           <label>

@@ -183,6 +183,15 @@ function buildFieldSpecificEvidence(evidence, fieldKey) {
   return [...specific, ...shared].slice(0, 8);
 }
 
+function resolveEvidenceSourceFieldKey(field) {
+  const raw = normalizeString(field?.evidenceSourceField);
+  if (!raw) return null;
+  const key = String(raw).trim();
+  if (!key) return null;
+  if (key === String(field?.key || "")) return null;
+  return key;
+}
+
 function buildEvidenceForPass(fieldEvidence, passType) {
   const out = [];
   for (const item of fieldEvidence || []) {
@@ -463,6 +472,7 @@ export async function runEnrichment(input, settings, options = {}) {
     const fieldDebug = [];
     const allEvidence = [];
     const priorFieldValues = {};
+    const fieldEvidenceByKey = {};
 
     const sharedOverrideEvidence = Array.isArray(options.planOverride)
       ? await collectEvidence(cleanInput, settings, {
@@ -482,6 +492,7 @@ export async function runEnrichment(input, settings, options = {}) {
       );
       const fieldTemplateVars = buildFieldTemplateVars(cleanInput, priorFieldValues);
       const useAiMode = isBrightDataAiMode(settings);
+      const evidenceSourceFieldKey = resolveEvidenceSourceFieldKey(field);
 
       const profilePlans = buildPlansFromTemplateText({
         input: cleanInput,
@@ -498,19 +509,38 @@ export async function runEnrichment(input, settings, options = {}) {
         extraVars: fieldTemplateVars
       });
 
-      const collectedForField = sharedOverrideEvidence
-        ? sharedOverrideEvidence
-        : await collectEvidence(cleanInput, settings, {
-            planOverride: useAiMode ? [...fieldPlans] : [...profilePlans, ...fieldPlans],
-            onProgress: makeEvidenceProgressReporter(options, field.key)
-          });
-      if (sharedOverrideEvidence) {
-        if (!allEvidence.length) allEvidence.push(...collectedForField);
+      let fieldEvidence = null;
+      if (evidenceSourceFieldKey && Array.isArray(fieldEvidenceByKey[evidenceSourceFieldKey])) {
+        fieldEvidence = fieldEvidenceByKey[evidenceSourceFieldKey];
+        emitProgress(
+          options,
+          `Field ${fieldIndex + 1}/${totalFields}: reusing evidence from ${evidenceSourceFieldKey} for ${field.key}`,
+          Math.min(95, fieldStartProgress + 2),
+          { stage: "field_reuse_evidence", field: field.key, sourceField: evidenceSourceFieldKey }
+        );
       } else {
-        allEvidence.push(...collectedForField);
+        if (evidenceSourceFieldKey) {
+          emitProgress(
+            options,
+            `Field ${fieldIndex + 1}/${totalFields}: evidence source ${evidenceSourceFieldKey} unavailable, using own queries for ${field.key}`,
+            Math.min(95, fieldStartProgress + 1),
+            { stage: "field_reuse_evidence_fallback", field: field.key, sourceField: evidenceSourceFieldKey }
+          );
+        }
+        const collectedForField = sharedOverrideEvidence
+          ? sharedOverrideEvidence
+          : await collectEvidence(cleanInput, settings, {
+              planOverride: useAiMode ? [...fieldPlans] : [...profilePlans, ...fieldPlans],
+              onProgress: makeEvidenceProgressReporter(options, field.key)
+            });
+        if (sharedOverrideEvidence) {
+          if (!allEvidence.length) allEvidence.push(...collectedForField);
+        } else {
+          allEvidence.push(...collectedForField);
+        }
+        fieldEvidence = buildFieldSpecificEvidence(collectedForField, field.key);
       }
-
-      const fieldEvidence = buildFieldSpecificEvidence(collectedForField, field.key);
+      fieldEvidenceByKey[field.key] = fieldEvidence;
       const aioSummary = summarizeAioForEvidence(fieldEvidence);
       emitProgress(
         options,
@@ -616,6 +646,7 @@ export async function runEnrichment(input, settings, options = {}) {
         label: field.label,
         threshold,
         prompt: chosen.prompt || null,
+        evidenceSourceField: evidenceSourceFieldKey || null,
         evidenceCount: fieldEvidence.length,
         rawValue: value,
         confidence: chosen.confidence,
@@ -773,6 +804,7 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
   const selectedIndex = enabledFields.findIndex((item) => item.key === selectedField.key);
   const priorFieldValues = {};
   const priorFieldDebug = [];
+  const priorFieldEvidenceByKey = {};
 
   if (selectedIndex > 0) {
     for (const priorField of enabledFields.slice(0, selectedIndex)) {
@@ -799,6 +831,7 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
         onProgress
       });
       const priorFieldEvidence = buildFieldSpecificEvidence(priorEvidence, priorField.key);
+      priorFieldEvidenceByKey[priorField.key] = priorFieldEvidence;
       const priorThreshold = getFieldThreshold(priorField, settings);
       const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
       const useAiModePass = isBrightDataAiMode(settings);
@@ -861,21 +894,33 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
 
   const probeTemplateVars = buildFieldTemplateVars(cleanInput, priorFieldValues);
   const templateText = queryTemplate || selectedField.queryTemplates || "{{company}} {{city}} {{state}}";
-  const probeProfilePlans = buildPlansFromTemplateText({
-    input: cleanInput,
-    templateText: settings.profileSerpQueryTemplates || "{{company}} {{city}} {{state}}",
-    field: "business_profile",
-    type: "google_serp_profile",
-    extraVars: probeTemplateVars
-  });
-  const probeFieldPlans = buildPlansFromTemplateText({
-    input: cleanInput,
-    templateText,
-    field: selectedField.key,
-    type: `google_serp_${selectedField.key}`,
-    extraVars: probeTemplateVars
-  });
-  const planOverride = useAiMode ? [...probeFieldPlans] : [...probeProfilePlans, ...probeFieldPlans];
+  const evidenceSourceFieldKey = resolveEvidenceSourceFieldKey(selectedField);
+  let planOverride = [];
+  let fieldEvidence = null;
+  if (!queryTemplate && evidenceSourceFieldKey && Array.isArray(priorFieldEvidenceByKey[evidenceSourceFieldKey])) {
+    fieldEvidence = priorFieldEvidenceByKey[evidenceSourceFieldKey];
+    if (onProgress) {
+      onProgress(
+        `Using prior field evidence from ${evidenceSourceFieldKey} for ${selectedField.key} (query template override disabled)`
+      );
+    }
+  } else {
+    const probeProfilePlans = buildPlansFromTemplateText({
+      input: cleanInput,
+      templateText: settings.profileSerpQueryTemplates || "{{company}} {{city}} {{state}}",
+      field: "business_profile",
+      type: "google_serp_profile",
+      extraVars: probeTemplateVars
+    });
+    const probeFieldPlans = buildPlansFromTemplateText({
+      input: cleanInput,
+      templateText,
+      field: selectedField.key,
+      type: `google_serp_${selectedField.key}`,
+      extraVars: probeTemplateVars
+    });
+    planOverride = useAiMode ? [...probeFieldPlans] : [...probeProfilePlans, ...probeFieldPlans];
+  }
 
   if (onProgress) {
     onProgress(
@@ -889,15 +934,19 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
       )}ms`
     );
   }
-  if (onProgress) onProgress(`Built plan with ${planOverride.length} query(ies)`);
-
-  const evidence = await collectEvidence(cleanInput, settings, {
-    planOverride,
-    onProgress
-  });
-  if (onProgress) onProgress(`Evidence collected: ${evidence.length} item(s)`);
-
-  const fieldEvidence = buildFieldSpecificEvidence(evidence, selectedField.key);
+  let evidence = [];
+  if (!fieldEvidence) {
+    if (onProgress) onProgress(`Built plan with ${planOverride.length} query(ies)`);
+    evidence = await collectEvidence(cleanInput, settings, {
+      planOverride,
+      onProgress
+    });
+    if (onProgress) onProgress(`Evidence collected: ${evidence.length} item(s)`);
+    fieldEvidence = buildFieldSpecificEvidence(evidence, selectedField.key);
+  } else {
+    evidence = fieldEvidence;
+    if (onProgress) onProgress(`Reused evidence items: ${fieldEvidence.length}`);
+  }
   const aioSummary = summarizeAioForEvidence(fieldEvidence);
   if (onProgress) {
     onProgress(
