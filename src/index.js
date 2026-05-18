@@ -157,10 +157,64 @@ function isTimeoutLikeError(error) {
   );
 }
 
+function parseHttpStatusFromText(text) {
+  const match = String(text || "").match(/\bhttp\s+(\d{3})\b/i);
+  if (!match) return null;
+  const status = Number(match[1]);
+  return Number.isFinite(status) ? status : null;
+}
+
+function inferErrorSource(error) {
+  const message = String(error?.message || error || "");
+  const lower = message.toLowerCase();
+  const attempts = Array.isArray(error?.attempts) ? error.attempts : [];
+  const attemptUrls = attempts.map((item) => String(item?.url || "").toLowerCase());
+
+  if (lower.startsWith("missing required input fields:")) return "validation";
+  if (lower.includes("bright data") || lower.includes("brightdata")) return "brightdata";
+  if (
+    attemptUrls.some(
+      (url) =>
+        url.includes("/v1/chat/completions") ||
+        url.includes("/chat/completions") ||
+        url.includes("/api/generate") ||
+        url.includes("/api/chat")
+    )
+  ) {
+    return "qwen";
+  }
+  if (lower.includes("model ")) return "qwen";
+  return "app";
+}
+
+function inferErrorType(error) {
+  const message = String(error?.message || error || "");
+  const lower = message.toLowerCase();
+  const upstreamStatus = parseHttpStatusFromText(message);
+
+  if (lower.startsWith("missing required input fields:")) return "validation_error";
+  if (isTimeoutLikeError(error)) return "upstream_timeout";
+  if (upstreamStatus) return `upstream_http_${upstreamStatus}`;
+  if (lower.includes("json")) return "model_parse_error";
+  return "internal_error";
+}
+
+function buildErrorMeta(error) {
+  const source = inferErrorSource(error);
+  const type = inferErrorType(error);
+  const upstreamHttpStatus = parseHttpStatusFromText(String(error?.message || error || ""));
+  return {
+    error_source: source,
+    error_type: type,
+    upstream_http_status: upstreamHttpStatus
+  };
+}
+
 function mapEnrichmentErrorToHttp(error) {
   const message = String(error?.message || error || "Unknown error");
+  const meta = buildErrorMeta(error);
   if (message.startsWith("Missing required input fields:")) {
-    return { status: 400, body: { ok: false, error: message } };
+    return { status: 400, body: { ok: false, error: message, ...meta } };
   }
   if (isTimeoutLikeError(error)) {
     return {
@@ -168,11 +222,19 @@ function mapEnrichmentErrorToHttp(error) {
       body: {
         ok: false,
         error: message,
-        code: "UPSTREAM_TIMEOUT"
+        code: "UPSTREAM_TIMEOUT",
+        ...meta
       }
     };
   }
-  return { status: 500, body: { ok: false, error: message } };
+  return {
+    status: 500,
+    body: {
+      ok: false,
+      error: message,
+      ...meta
+    }
+  };
 }
 
 function makeApiRequestId(prefix = "req") {
