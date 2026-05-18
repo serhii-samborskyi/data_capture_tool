@@ -40,8 +40,13 @@ else
   echo "[3/5] .env already exists"
 fi
 
+if ! grep -qE '^DATABASE_URL=' .env; then
+  echo "DATABASE_URL=\"file:./dev.db\"" >> .env
+  echo "Added missing DATABASE_URL to .env"
+fi
+
 echo "[4/6] Preparing database schema + settings migration"
-node -e 'import { ensureDatabaseSchema } from "./src/db.js"; import { getSettings } from "./src/settings.js"; await ensureDatabaseSchema(); await getSettings(); console.log("Database ready");'
+DOTENV_CONFIG_PATH=.env node -r dotenv/config -e 'import { ensureDatabaseSchema } from "./src/db.js"; import { getSettings } from "./src/settings.js"; await ensureDatabaseSchema(); await getSettings(); console.log("Database ready");'
 
 echo "[5/6] Restarting app on port $PORT_VALUE"
 ./restart.sh "$PORT_VALUE"
