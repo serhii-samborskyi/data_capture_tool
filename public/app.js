@@ -31,9 +31,15 @@ const modelNameStatus = qs("modelNameStatus");
 const refreshApiLogsBtn = qs("refreshApiLogsBtn");
 const clearApiLogsBtn = qs("clearApiLogsBtn");
 const apiLogsBox = qs("apiLogsBox");
+const sysCpu = qs("sysCpu");
+const sysRam = qs("sysRam");
+const sysGpu = qs("sysGpu");
+const sysDisk = qs("sysDisk");
+const sysUpdatedAt = qs("sysUpdatedAt");
 
 let activeFieldProbePoll = null;
 let activeEnrichPoll = null;
+let systemMetricsPoll = null;
 let enrichmentFieldsState = [];
 let inputFieldsState = [];
 let inputValuesState = {};
@@ -565,6 +571,66 @@ async function loadApiLogs() {
   apiLogsBox.textContent = JSON.stringify(logs, null, 2);
 }
 
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return `${Number(value).toFixed(1)}%`;
+}
+
+function formatGb(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return `${Number(value).toFixed(1)}GB`;
+}
+
+function renderSystemMetrics(data) {
+  const cpu = data?.cpu || {};
+  const ram = data?.ram || {};
+  const disk = data?.disk || null;
+  const gpu = data?.gpu || null;
+
+  sysCpu.textContent = `${formatPercent(cpu.loadPercent)}${cpu.cores ? ` (${cpu.cores}c)` : ""}`;
+  sysRam.textContent = `${formatPercent(ram.usedPercent)} (${formatGb(ram.usedGb)} / ${formatGb(ram.totalGb)})`;
+  sysDisk.textContent = disk
+    ? `${formatPercent(disk.usedPercent)} (${formatGb(disk.usedGb)} / ${formatGb(disk.totalGb)})`
+    : "--";
+
+  if (gpu && gpu.utilizationPercent !== null) {
+    const memPart =
+      gpu.memoryUsedMb !== null && gpu.memoryTotalMb !== null
+        ? ` | VRAM ${gpu.memoryUsedMb}/${gpu.memoryTotalMb}MB`
+        : "";
+    sysGpu.textContent = `${formatPercent(gpu.utilizationPercent)}${memPart}`;
+  } else {
+    sysGpu.textContent = "N/A";
+  }
+
+  const ts = data?.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : "--";
+  sysUpdatedAt.textContent = `System metrics updated: ${ts}`;
+}
+
+async function loadSystemMetrics() {
+  try {
+    const data = await fetchJson("/api/system/metrics");
+    renderSystemMetrics(data);
+  } catch {
+    sysCpu.textContent = "--";
+    sysRam.textContent = "--";
+    sysGpu.textContent = "--";
+    sysDisk.textContent = "--";
+    sysUpdatedAt.textContent = "System metrics unavailable";
+  }
+}
+
+async function startSystemMetricsPolling() {
+  if (systemMetricsPoll) {
+    clearInterval(systemMetricsPoll);
+    systemMetricsPoll = null;
+  }
+  await loadSystemMetrics();
+  systemMetricsPoll = setInterval(() => {
+    loadSystemMetrics();
+  }, 4000);
+}
+
 function dynamicNullResult() {
   syncFieldStateFromDom();
   const out = {};
@@ -918,4 +984,12 @@ fieldDebugForm?.addEventListener("submit", async (event) => {
   await loadSettings();
   await loadRuns();
   await loadApiLogs();
+  await startSystemMetricsPolling();
 })();
+
+window.addEventListener("beforeunload", () => {
+  if (systemMetricsPoll) {
+    clearInterval(systemMetricsPoll);
+    systemMetricsPoll = null;
+  }
+});

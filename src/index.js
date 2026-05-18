@@ -3,6 +3,9 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { mkdir, appendFile, readFile, writeFile } from "fs/promises";
+import os from "os";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import { z } from "zod";
 import { ensureDatabaseSchema, prisma } from "./db.js";
 import { getSettings, updateSettings } from "./settings.js";
@@ -21,6 +24,8 @@ app.use(express.static(path.join(__dirname, "..", "public")));
 const fieldProbeJobs = new Map();
 const enrichJobs = new Map();
 const enrichmentApiLogPath = path.join(__dirname, "..", "logs", "enrichment-api.jsonl");
+const execFileAsync = promisify(execFile);
+let lastCpuSample = null;
 
 const inputValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
@@ -268,6 +273,118 @@ function getEnabledEnrichmentFields(settings) {
   return migrateLegacyFields(settings).filter((field) => field.enabled !== false);
 }
 
+function round2(value) {
+  return Math.round(Number(value || 0) * 100) / 100;
+}
+
+function getCpuSample() {
+  const cpus = os.cpus();
+  let idle = 0;
+  let total = 0;
+  for (const cpu of cpus) {
+    const times = cpu.times;
+    idle += times.idle;
+    total += times.user + times.nice + times.sys + times.irq + times.idle;
+  }
+  return { idle, total, cores: cpus.length };
+}
+
+function getCpuLoadPercent() {
+  const current = getCpuSample();
+  if (!lastCpuSample) {
+    lastCpuSample = current;
+    return null;
+  }
+  const idleDiff = current.idle - lastCpuSample.idle;
+  const totalDiff = current.total - lastCpuSample.total;
+  lastCpuSample = current;
+  if (totalDiff <= 0) return null;
+  const used = 1 - idleDiff / totalDiff;
+  return Math.max(0, Math.min(100, round2(used * 100)));
+}
+
+async function getDiskUsage() {
+  try {
+    const { stdout } = await execFileAsync("df", ["-kP", "."]);
+    const lines = String(stdout || "")
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    if (lines.length < 2) return null;
+    const parts = lines[1].trim().split(/\s+/);
+    if (parts.length < 6) return null;
+    const totalKb = Number(parts[1] || 0);
+    const usedKb = Number(parts[2] || 0);
+    const availKb = Number(parts[3] || 0);
+    const usedPercent = Number(String(parts[4] || "0").replace("%", "")) || 0;
+    return {
+      mount: parts[5] || "/",
+      totalGb: round2(totalKb / 1024 / 1024),
+      usedGb: round2(usedKb / 1024 / 1024),
+      availableGb: round2(availKb / 1024 / 1024),
+      usedPercent: round2(usedPercent)
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function getGpuMetrics() {
+  try {
+    const query = "name,utilization.gpu,memory.used,memory.total,temperature.gpu";
+    const { stdout } = await execFileAsync("nvidia-smi", [
+      `--query-gpu=${query}`,
+      "--format=csv,noheader,nounits"
+    ]);
+    const line = String(stdout || "")
+      .trim()
+      .split("\n")
+      .map((x) => x.trim())
+      .find(Boolean);
+    if (!line) return null;
+    const parts = line.split(",").map((x) => x.trim());
+    if (parts.length < 5) return null;
+    const name = parts[0];
+    const util = Number(parts[1]);
+    const memUsed = Number(parts[2]);
+    const memTotal = Number(parts[3]);
+    const temp = Number(parts[4]);
+    const memoryPercent = memTotal > 0 ? (memUsed / memTotal) * 100 : 0;
+    return {
+      name,
+      utilizationPercent: Number.isFinite(util) ? round2(util) : null,
+      memoryUsedMb: Number.isFinite(memUsed) ? round2(memUsed) : null,
+      memoryTotalMb: Number.isFinite(memTotal) ? round2(memTotal) : null,
+      memoryPercent: Number.isFinite(memoryPercent) ? round2(memoryPercent) : null,
+      temperatureC: Number.isFinite(temp) ? round2(temp) : null
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function getSystemMetrics() {
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const usedMem = Math.max(0, totalMem - freeMem);
+  const usedPercent = totalMem > 0 ? (usedMem / totalMem) * 100 : 0;
+  const [disk, gpu] = await Promise.all([getDiskUsage(), getGpuMetrics()]);
+  return {
+    cpu: {
+      cores: os.cpus().length,
+      loadPercent: getCpuLoadPercent()
+    },
+    ram: {
+      totalGb: round2(totalMem / 1024 / 1024 / 1024),
+      usedGb: round2(usedMem / 1024 / 1024 / 1024),
+      usedPercent: round2(usedPercent)
+    },
+    gpu,
+    disk,
+    updatedAt: new Date().toISOString()
+  };
+}
+
 function buildPublicEnrichmentSchema(settings) {
   const inputFields = migrateInputFields(settings);
   const enrichmentFields = getEnabledEnrichmentFields(settings);
@@ -471,6 +588,15 @@ async function requirePublicApiKey(req, res, next) {
 app.get("/api/health", async (_req, res) => {
   const settings = await getSettings();
   res.json({ ok: true, ts: new Date().toISOString(), settings });
+});
+
+app.get("/api/system/metrics", async (_req, res) => {
+  try {
+    const metrics = await getSystemMetrics();
+    res.json({ ok: true, ...metrics });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
 });
 
 app.get("/api/settings", async (_req, res) => {
