@@ -148,7 +148,7 @@
           </label>
           <label class="checkbox-row">
             <input id="useBrightDataSerp" type="checkbox" />
-            Use Bright Data SERP API
+            Use External SERP API
           </label>
           <label>
             Bright Data SERP Mode
@@ -156,7 +156,16 @@
               <option value="request">request (sync)</option>
               <option value="dataset">dataset (trigger + snapshot)</option>
               <option value="ai_mode">google_ai_mode (sync answer_text)</option>
+              <option value="browser_automation_tool">browser_automation_tool (sync local API)</option>
             </select>
+          </label>
+          <label>
+            Browser Automation Tool Base URL
+            <input id="browserAutomationToolBaseUrl" placeholder="http://127.0.0.1:4865" />
+          </label>
+          <label>
+            Browser Automation Script Name
+            <input id="browserAutomationScriptName" placeholder="ai_overview.js" />
           </label>
           <label>
             Bright Data AI Mode Dataset ID

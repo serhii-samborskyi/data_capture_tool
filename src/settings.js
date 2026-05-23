@@ -24,6 +24,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   useBrightDataSerp: true,
   brightDataSerpMode: process.env.BRIGHT_DATA_SERP_MODE || "request",
   brightDataApiToken: process.env.BRIGHT_DATA_API_TOKEN || "",
+  browserAutomationToolBaseUrl:
+    process.env.BROWSER_AUTOMATION_TOOL_BASE_URL || "http://127.0.0.1:4865",
+  browserAutomationScriptName:
+    process.env.BROWSER_AUTOMATION_SCRIPT_NAME || "ai_overview.js",
   brightDataAiModeDatasetId: process.env.BRIGHT_DATA_AI_MODE_DATASET_ID || "gd_mcswdt6z2elth3zqr2",
   brightDataAiModeCountry: process.env.BRIGHT_DATA_AI_MODE_COUNTRY || "",
   brightDataAiModeHtmlFallbackChars: Number(process.env.BRIGHT_DATA_AI_MODE_HTML_FALLBACK_CHARS || 6000),

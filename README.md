@@ -17,6 +17,7 @@ Prototype REST API + UI to enrich local business data using:
 - Bright Data SERP integration for Google queries (`useBrightDataSerp`), avoiding browser automation blocks.
 - Bright Data dual modes: direct `/request` or Datasets v3 (`trigger` + `snapshot` polling) with automatic fallback to `/request`.
 - Bright Data `google_ai_mode` sync mode via Datasets v3 `/scrape`, using `answer_text + answer_text_markdown` as evidence.
+- Alternative SERP mode: `browser_automation_tool` via local sync endpoint (`/api/run-sync`) returning `ai_answer` evidence.
 - In `google_ai_mode`, the app uses one field-specific Bright Data request (no extra profile query) to reduce API cost.
 - If AI answer text is insufficient, it retries extraction using cropped text from `answer_html` as fallback evidence.
 - In dataset mode, enrichment runs two-pass extraction per field: `aio_text` first, then compact top-10 organic evidence if needed.

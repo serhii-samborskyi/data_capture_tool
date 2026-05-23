@@ -326,7 +326,9 @@ function getBrightDataSerpMode(settings) {
   const raw = String(settings?.brightDataSerpMode || "request")
     .trim()
     .toLowerCase();
-  if (raw === "dataset" || raw === "ai_mode" || raw === "request") return raw;
+  if (raw === "dataset" || raw === "ai_mode" || raw === "request" || raw === "browser_automation_tool") {
+    return raw;
+  }
   return "request";
 }
 
@@ -876,10 +878,105 @@ async function fetchBrightDataAiModeSync(plan, settings, timeoutMs, onProgress) 
   }
 }
 
+async function fetchBrowserAutomationToolSync(plan, settings, timeoutMs, onProgress) {
+  const baseUrl = String(settings.browserAutomationToolBaseUrl || "")
+    .trim()
+    .replace(/\/+$/, "");
+  const scriptName = String(settings.browserAutomationScriptName || "ai_overview.js").trim();
+  if (!baseUrl) {
+    throw new Error("Browser automation tool base URL is missing");
+  }
+  if (!scriptName) {
+    throw new Error("Browser automation tool scriptName is missing");
+  }
+
+  const endpoint = `${baseUrl}/api/run-sync?scriptName=${encodeURIComponent(
+    scriptName
+  )}&request=${encodeURIComponent(String(plan.query || "").trim())}`;
+  const timeline = [];
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    if (onProgress) {
+      onProgress(`Browser automation tool request for "${plan.query}"`);
+    }
+    timeline.push({
+      at: new Date().toISOString(),
+      step: "browser_automation_request",
+      url: endpoint
+    });
+    const response = await fetch(endpoint, {
+      method: "GET",
+      signal: controller.signal
+    });
+    const raw = await response.text();
+    timeline.push({
+      at: new Date().toISOString(),
+      step: "browser_automation_response",
+      statusCode: response.status,
+      bodyPreview: truncate(raw, 1000)
+    });
+    if (!response.ok) {
+      throw new Error(`Browser automation tool HTTP ${response.status}: ${truncate(raw, 240)}`);
+    }
+    const parsed = safeJsonParse(raw);
+    const result = parsed?.result && typeof parsed.result === "object" ? parsed.result : parsed;
+    const aiAnswerText = truncate(String(result?.ai_answer || result?.answer || "").trim(), 20000);
+    const currentUrl = String(result?.currentUrl || "").trim();
+    if (!aiAnswerText) {
+      throw new Error("Browser automation tool response missing ai_answer");
+    }
+
+    let snippet = `Search query: ${plan.query}\nSearch URL: ${currentUrl || endpoint}\nAI answer text:\n${aiAnswerText}`;
+    return {
+      sourceType: plan.type,
+      field: plan.field || null,
+      query: plan.query,
+      queryTemplate: plan.queryTemplate || null,
+      url: currentUrl || endpoint,
+      snippet: truncate(snippet, 4200),
+      debug: {
+        provider: "browser_automation_tool",
+        mode: "browser_automation_tool",
+        fallbackUsed: false,
+        timeline,
+        aiAnswerText,
+        aiAnswerMarkdown: "",
+        aiAnswerHtmlText: "",
+        aioText: "",
+        parsedLightOrganicCount: 0,
+        compactOrganicPreview: "",
+        rawResponsePreview: truncate(raw, 20000),
+        topLinks: []
+      }
+    };
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Browser automation tool timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress) {
   const searchUrl = buildSearchUrl(plan.query, "google");
   const mode = getBrightDataSerpMode(settings);
   const fallbackToRequest = Boolean(settings.brightDataDatasetFallbackToRequest);
+
+  if (mode === "browser_automation_tool") {
+    const evidence = await fetchBrowserAutomationToolSync(plan, settings, timeoutMs, onProgress);
+    const summary = summarizeEvidenceDebug(evidence);
+    if (onProgress) {
+      onProgress(
+        `Browser automation parsed: field=${plan.field || "unknown"} mode=${summary.mode} ai_answer=${
+          summary.aiAnswerPresent ? "yes" : "no"
+        } ai_len=${summary.aiAnswerLength}`
+      );
+    }
+    return evidence;
+  }
 
   if (mode === "ai_mode") {
     const evidence = await fetchBrightDataAiModeSync(plan, settings, timeoutMs, onProgress);
@@ -1092,12 +1189,15 @@ async function runPlanWithRetries({
   timeoutMs,
   onProgress
 }) {
-  const shouldUseBrightDataSerp =
+  const externalSerpMode = getBrightDataSerpMode(settings);
+  const shouldUseExternalSerp =
     plan.mode === "search" &&
     plan.engine === "google" &&
     Boolean(settings.useBrightDataSerp) &&
-    Boolean(settings.brightDataApiToken);
-  const maxAttempts = shouldUseBrightDataSerp
+    (externalSerpMode === "browser_automation_tool"
+      ? Boolean(String(settings.browserAutomationToolBaseUrl || "").trim())
+      : Boolean(settings.brightDataApiToken));
+  const maxAttempts = shouldUseExternalSerp
     ? 1
     : Math.max(1, Number(settings.proxyRetryCount || 2) + 1);
 
@@ -1108,7 +1208,7 @@ async function runPlanWithRetries({
         `Fetching evidence: field=${plan.field || "unknown"} type=${plan.type} attempt=${attempt}/${maxAttempts}`
       );
     }
-    if (shouldUseBrightDataSerp) {
+    if (shouldUseExternalSerp) {
       try {
         return await collectFromBrightDataSerp(plan, settings, timeoutMs, onProgress);
       } catch (error) {
@@ -1156,8 +1256,12 @@ async function runPlanWithRetries({
     url: plan.mode === "direct" ? plan.url : `search:${plan.query}`,
     snippet: `Source failed: ${lastError ? String(lastError.message || lastError) : "unknown error"}`,
     debug: {
-      provider: shouldUseBrightDataSerp ? "brightdata" : "playwright",
-      mode: shouldUseBrightDataSerp
+      provider: shouldUseExternalSerp
+        ? externalSerpMode === "browser_automation_tool"
+          ? "browser_automation_tool"
+          : "brightdata"
+        : "playwright",
+      mode: shouldUseExternalSerp
         ? getBrightDataSerpMode(settings)
         : "playwright",
       rawResponsePreview: "",
@@ -1168,12 +1272,13 @@ async function runPlanWithRetries({
 
 function resolveEvidenceTimeoutForPlan(plan, settings, baseTimeoutMs) {
   const base = Math.max(5000, Number(baseTimeoutMs || 45000));
+  const externalSerpMode = getBrightDataSerpMode(settings);
   const isBrightDataDatasetPlan =
     plan.mode === "search" &&
     plan.engine === "google" &&
     Boolean(settings.useBrightDataSerp) &&
     Boolean(settings.brightDataApiToken) &&
-    getBrightDataSerpMode(settings) === "dataset";
+    externalSerpMode === "dataset";
 
   if (!isBrightDataDatasetPlan) return base;
 

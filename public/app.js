@@ -68,6 +68,8 @@ const settingsFields = [
   "useBrightDataSerp",
   "brightDataSerpMode",
   "brightDataApiToken",
+  "browserAutomationToolBaseUrl",
+  "browserAutomationScriptName",
   "brightDataAiModeDatasetId",
   "brightDataAiModeCountry",
   "brightDataAiModeHtmlFallbackChars",
