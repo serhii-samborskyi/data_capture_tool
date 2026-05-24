@@ -589,7 +589,40 @@ async function loadRuns() {
 async function loadApiLogs() {
   const data = await fetchJson("/api/logs/enrichment?limit=100");
   const logs = Array.isArray(data?.logs) ? data.logs : [];
-  apiLogsBox.textContent = JSON.stringify(logs, null, 2);
+  if (!logs.length) {
+    apiLogsBox.textContent = "No API logs yet.";
+    return;
+  }
+  const formatted = logs
+    .map((entry, idx) => {
+      const lines = [];
+      lines.push(`#${idx + 1} ${entry.ts || ""} ${entry.endpoint || ""} status=${entry.status}`);
+      lines.push(`requestId: ${entry.requestId || "-"}`);
+      lines.push(`mode: ${entry.mode || "-"}, durationMs: ${entry.durationMs ?? "-"}`);
+      if (entry?.input) lines.push(`input: ${JSON.stringify(entry.input)}`);
+
+      const fieldLogs = Array.isArray(entry?.qwen?.enrichment_field_logs)
+        ? entry.qwen.enrichment_field_logs
+        : [];
+      if (fieldLogs.length) {
+        lines.push("fields:");
+        for (const field of fieldLogs) {
+          lines.push(`- Enrichment Field Name: ${field?.enrichment_field_name || "-"}`);
+          lines.push(`  Evidence Text: ${String(field?.evidence_text_used || "").slice(0, 2500) || "-"}`);
+          lines.push(`  Qwen Result: ${JSON.stringify(field?.qwen_result || null)}`);
+        }
+      }
+
+      if (entry?.error) {
+        lines.push(`error: ${JSON.stringify(entry.error)}`);
+      }
+
+      lines.push("raw_log_json:");
+      lines.push(JSON.stringify(entry, null, 2));
+      return lines.join("\n");
+    })
+    .join("\n\n==============================\n\n");
+  apiLogsBox.textContent = formatted;
 }
 
 function formatPercent(value) {

@@ -278,6 +278,7 @@ async function runFieldExtractionPass({
   threshold,
   passName
 }) {
+  const evidenceText = buildEvidenceLines(evidenceForPrompt, { maxSources: 6, snippetMax: 1600 });
   const prompt = buildFieldPrompt({
     input,
     field,
@@ -305,6 +306,7 @@ async function runFieldExtractionPass({
       ok: true,
       passName,
       prompt,
+      evidenceText,
       evidenceCount: evidenceForPrompt.length,
       value,
       confidence: extracted.confidence,
@@ -318,6 +320,7 @@ async function runFieldExtractionPass({
       ok: false,
       passName,
       prompt,
+      evidenceText,
       evidenceCount: evidenceForPrompt.length,
       value: null,
       confidence: 0,
@@ -663,6 +666,7 @@ export async function runEnrichment(input, settings, options = {}) {
           ok: pass.ok,
           shouldRetry: pass.shouldRetry,
           prompt: pass.prompt,
+          evidenceText: pass.evidenceText || "",
           evidenceCount: pass.evidenceCount,
           rawValue: pass.value,
           confidence: pass.confidence,

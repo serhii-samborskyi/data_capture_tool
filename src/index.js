@@ -273,9 +273,32 @@ function summarizeEvidenceForApiLog(debug) {
 
 function summarizeQwenForApiLog(debug, result) {
   const fieldDebug = Array.isArray(debug?.fieldDebug) ? debug.fieldDebug : [];
+  const clip = (value, max = 12000) => String(value || "").slice(0, max);
+  const fieldSummaries = fieldDebug.map((field) => {
+    const passes = Array.isArray(field.passDebug) ? field.passDebug : [];
+    const chosenPass =
+      passes.find((pass) => pass.passName === "ai_answer" && pass.gatedValue !== null) ||
+      passes.find((pass) => pass.gatedValue !== null) ||
+      passes.find((pass) => pass.rawValue !== null && pass.rawValue !== undefined && String(pass.rawValue).trim()) ||
+      passes[passes.length - 1] ||
+      null;
+    return {
+      enrichment_field_name: field.key,
+      evidence_text_used: clip(chosenPass?.evidenceText || chosenPass?.prompt || "", 14000),
+      qwen_result: {
+        raw_value: field.rawValue,
+        gated_value: field.gatedValue,
+        confidence: field.confidence,
+        pass: chosenPass?.passName || null,
+        error: chosenPass?.error || null
+      }
+    };
+  });
+
   return {
     modelParsedBeforeThreshold: debug?.modelParsedBeforeThreshold || null,
     finalResult: result || null,
+    enrichment_field_logs: fieldSummaries,
     fields: fieldDebug.map((field) => ({
       key: field.key,
       rawValue: field.rawValue,
@@ -287,7 +310,8 @@ function summarizeQwenForApiLog(debug, result) {
             rawValue: pass.rawValue,
             gatedValue: pass.gatedValue,
             confidence: pass.confidence,
-            error: pass.error || null
+            error: pass.error || null,
+            evidenceText: clip(pass.evidenceText || pass.prompt || "", 10000)
           }))
         : []
     }))
