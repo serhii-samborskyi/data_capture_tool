@@ -51,6 +51,7 @@ const enrichmentFieldSchema = z.object({
   enabled: z.boolean().optional(),
   evidenceSourceField: z.string().nullable().optional(),
   useEvidenceJsonResult: z.boolean().optional(),
+  skipQwenFallback: z.boolean().optional(),
   queryTemplates: z.string().optional(),
   promptTemplate: z.string().optional(),
   confidenceThreshold: z.number().min(0).max(1).nullable().optional(),

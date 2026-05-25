@@ -474,6 +474,10 @@ function runEvidenceJsonExtractionPass({
 }
 
 function buildPassPlan({ settings, field, fieldEvidence }) {
+  if (field.useEvidenceJsonResult === true && field.skipQwenFallback === true) {
+    return [{ name: "evidence_json", evidence: fieldEvidence }];
+  }
+
   const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
   const useAiModePass = isBrightDataAiMode(settings);
   const aioEvidence = buildEvidenceForPass(fieldEvidence, "aio");
@@ -1023,6 +1027,7 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
       label: String(field || "field").trim(),
       enabled: true,
       useEvidenceJsonResult: false,
+      skipQwenFallback: false,
       queryTemplates: "{{company}} {{city}} {{state}}",
       promptTemplate: "",
       confidenceThreshold: Number(settings.confidenceThreshold ?? 0.75),
