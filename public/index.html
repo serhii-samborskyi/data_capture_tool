@@ -347,16 +347,27 @@
                 <th>ID</th>
                 <th>Business</th>
                 <th>Status</th>
+                <th>AI Answer</th>
                 <th>Result</th>
                 <th>Created</th>
               </tr>
             </thead>
             <tbody id="runsBody">
-              <tr><td colspan="5">Loading...</td></tr>
+              <tr><td colspan="6">Loading...</td></tr>
             </tbody>
           </table>
         </div>
       </section>
+
+      <div id="aiAnswerModal" class="modal-backdrop hidden">
+        <div class="modal-card">
+          <div class="modal-head">
+            <h3>AI Answer</h3>
+            <button type="button" id="closeAiAnswerModalBtn" class="ghost">Close</button>
+          </div>
+          <pre id="aiAnswerModalText"></pre>
+        </div>
+      </div>
 
       <section class="panel">
         <h2>API Logs</h2>

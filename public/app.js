@@ -17,6 +17,9 @@ const fieldQwenParsedBox = qs("fieldQwenParsedBox");
 const fieldQwenRawBox = qs("fieldQwenRawBox");
 const evidenceBody = qs("evidenceBody");
 const runsBody = qs("runsBody");
+const aiAnswerModal = qs("aiAnswerModal");
+const aiAnswerModalText = qs("aiAnswerModalText");
+const closeAiAnswerModalBtn = qs("closeAiAnswerModalBtn");
 const sampleBtn = qs("sampleBtn");
 const modelCompatBtn = qs("modelCompatBtn");
 const loadModelsBtn = qs("loadModelsBtn");
@@ -573,18 +576,44 @@ function renderEvidence(evidences = []) {
 
 function renderRuns(runs = []) {
   if (!runs.length) {
-    runsBody.innerHTML = `<tr><td colspan="5">No runs yet.</td></tr>`;
+    runsBody.innerHTML = `<tr><td colspan="6">No runs yet.</td></tr>`;
     return;
   }
+
+  const extractAiAnswerFromRun = (run) => {
+    const evidences = Array.isArray(run?.evidences) ? run.evidences : [];
+    for (const ev of evidences) {
+      const snippet = String(ev?.snippet || "");
+      const patterns = [
+        /AI answer text:\s*([\s\S]*?)(?:\nAI answer markdown:|\nAIO text:|\nTop organic results|\nTop links:|$)/i,
+        /AIO text:\s*([\s\S]*?)(?:\nTop organic results|\nTop links:|$)/i
+      ];
+      for (const re of patterns) {
+        const m = snippet.match(re);
+        const val = String(m?.[1] || "").trim();
+        if (val) return val;
+      }
+    }
+    return "";
+  };
 
   runsBody.innerHTML = runs
     .map((run) => {
       const business = `${run.company}, ${run.city}, ${run.state}`;
+      const aiAnswerFull = extractAiAnswerFromRun(run);
+      const aiAnswerShort = aiAnswerFull ? `${aiAnswerFull.slice(0, 100)}${aiAnswerFull.length > 100 ? "..." : ""}` : "-";
       return `
         <tr>
           <td>${run.id}</td>
           <td>${business}</td>
           <td>${run.status}</td>
+          <td>${
+            aiAnswerFull
+              ? `<button type="button" class="ghost view-ai-answer-btn" data-ai-answer="${escapeHtml(aiAnswerFull)}">${escapeHtml(
+                  aiAnswerShort
+                )}</button>`
+              : "-"
+          }</td>
           <td><code>${JSON.stringify(run.result)}</code></td>
           <td>${new Date(run.createdAt).toLocaleString()}</td>
         </tr>
@@ -592,6 +621,24 @@ function renderRuns(runs = []) {
     })
     .join("");
 }
+
+runsBody?.addEventListener("click", (event) => {
+  const btn = event.target.closest(".view-ai-answer-btn");
+  if (!btn) return;
+  const text = String(btn.getAttribute("data-ai-answer") || "");
+  aiAnswerModalText.textContent = text;
+  aiAnswerModal?.classList.remove("hidden");
+});
+
+closeAiAnswerModalBtn?.addEventListener("click", () => {
+  aiAnswerModal?.classList.add("hidden");
+});
+
+aiAnswerModal?.addEventListener("click", (event) => {
+  if (event.target === aiAnswerModal) {
+    aiAnswerModal.classList.add("hidden");
+  }
+});
 
 async function loadSettings() {
   const settings = await fetchJson("/api/settings");
