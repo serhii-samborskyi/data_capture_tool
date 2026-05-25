@@ -91,6 +91,7 @@ export function getDefaultEnrichmentFields() {
       label: "Owner First Name",
       enabled: true,
       evidenceSourceField: null,
+      useEvidenceJsonResult: false,
       queryTemplates:
         "Owner of {{website}} {{city}} {{state}} linkedin\n{{company}} owner {{city}} {{state}} linkedin",
       promptTemplate: defaultOwnerPromptTemplate(),
@@ -102,6 +103,7 @@ export function getDefaultEnrichmentFields() {
       label: "Closest Competitor",
       enabled: true,
       evidenceSourceField: null,
+      useEvidenceJsonResult: false,
       queryTemplates:
         "{{company}} competitors {{city}} {{state}}\nbest {{category_or_service}} near {{city}} {{state}}",
       promptTemplate: defaultCompetitorPromptTemplate(),
@@ -113,6 +115,7 @@ export function getDefaultEnrichmentFields() {
       label: "Top Service",
       enabled: true,
       evidenceSourceField: null,
+      useEvidenceJsonResult: false,
       queryTemplates:
         "{{company}} {{city}} {{state}} services\n{{company}} {{city}} {{state}} what do they do",
       promptTemplate: defaultTopServicePromptTemplate(),
@@ -143,6 +146,7 @@ export function normalizeEnrichmentFields(rawFields, fallbackFields = []) {
         if (!normalized || normalized === key) return null;
         return normalized;
       })(),
+      useEvidenceJsonResult: row.useEvidenceJsonResult === true,
       queryTemplates: normalizeString(row.queryTemplates),
       promptTemplate: normalizeString(row.promptTemplate),
       confidenceThreshold: Number.isFinite(Number(row.confidenceThreshold))

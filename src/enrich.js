@@ -269,6 +269,235 @@ function isBrightDataAiMode(settings) {
   );
 }
 
+function normalizeFieldValueFromJson(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return null;
+}
+
+function parseJsonFromFencedBlocks(text) {
+  const out = [];
+  const source = String(text || "");
+  const re = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match = null;
+  while ((match = re.exec(source))) {
+    const candidate = String(match[1] || "").trim();
+    if (!candidate) continue;
+    try {
+      out.push(JSON.parse(candidate));
+    } catch {
+      // ignore parse failures
+    }
+  }
+  return out;
+}
+
+function parseJsonObjectsFromText(text) {
+  const source = String(text || "");
+  const out = [...parseJsonFromFencedBlocks(source)];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escape = false;
+  const maxCandidateLen = 12000;
+
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+      continue;
+    }
+
+    if (ch === "}") {
+      if (depth <= 0) continue;
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        const candidate = source.slice(start, i + 1);
+        start = -1;
+        if (!candidate || candidate.length > maxCandidateLen) continue;
+        try {
+          out.push(JSON.parse(candidate));
+        } catch {
+          // ignore parse failures
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
+function toObjectCandidates(value) {
+  if (Array.isArray(value)) {
+    return value.filter((item) => item && typeof item === "object" && !Array.isArray(item));
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return [value];
+  }
+  return [];
+}
+
+function collectEvidenceTextsForJson(item) {
+  return [
+    item?.snippet || "",
+    item?.debug?.aiAnswerText || "",
+    item?.debug?.aiAnswerMarkdown || "",
+    item?.debug?.aiAnswerHtmlText || "",
+    item?.debug?.aioText || "",
+    item?.debug?.rawResponsePreview || ""
+  ];
+}
+
+function runEvidenceJsonExtractionPass({
+  field,
+  evidenceForPrompt,
+  threshold,
+  passName = "evidence_json"
+}) {
+  const confidenceKey = `${field.key}_confidence`;
+  const candidates = [];
+
+  for (const item of evidenceForPrompt || []) {
+    for (const text of collectEvidenceTextsForJson(item)) {
+      const parsedItems = parseJsonObjectsFromText(text);
+      for (const parsedItem of parsedItems) {
+        for (const obj of toObjectCandidates(parsedItem)) {
+          const hasField = Object.prototype.hasOwnProperty.call(obj, field.key);
+          if (!hasField) continue;
+          const hasConfidence = Object.prototype.hasOwnProperty.call(obj, confidenceKey);
+          const value = normalizeFieldValueFromJson(obj[field.key]);
+          const confidence = value
+            ? hasConfidence
+              ? toNumberOrZero(obj[confidenceKey])
+              : 1
+            : 0;
+          const score = (hasField ? 1 : 0) + (hasConfidence ? 1 : 0);
+          candidates.push({
+            obj,
+            value,
+            confidence,
+            hasConfidence,
+            score,
+            evidenceText: String(text || "").slice(0, 14000)
+          });
+        }
+      }
+    }
+  }
+
+  const best = candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const aValue = a.value ? 1 : 0;
+    const bValue = b.value ? 1 : 0;
+    if (bValue !== aValue) return bValue - aValue;
+    if (b.hasConfidence !== a.hasConfidence) return (b.hasConfidence ? 1 : 0) - (a.hasConfidence ? 1 : 0);
+    return b.confidence - a.confidence;
+  })[0];
+
+  if (!best) {
+    return {
+      ok: false,
+      passName,
+      prompt: "[evidence_json_direct]",
+      evidenceText: "",
+      evidenceCount: evidenceForPrompt.length,
+      value: null,
+      confidence: 0,
+      gatedValue: null,
+      shouldRetry: true,
+      confidenceKey,
+      error: null,
+      model: {
+        parsed: null,
+        rawResponseText: "",
+        rawResponseJson: null,
+        endpointUrl: null,
+        attempts: [],
+        payload: null
+      }
+    };
+  }
+
+  let value = best.value;
+  if (field.key === "top_service") {
+    value = normalizeTopService(value);
+  }
+  const gatedValue = best.confidence >= threshold ? value : null;
+  return {
+    ok: true,
+    passName,
+    prompt: "[evidence_json_direct]",
+    evidenceText: best.evidenceText,
+    evidenceCount: evidenceForPrompt.length,
+    value,
+    confidence: best.confidence,
+    gatedValue,
+    shouldRetry: !value || best.confidence < threshold,
+    confidenceKey,
+    error: null,
+    model: {
+      parsed: best.obj,
+      rawResponseText: "",
+      rawResponseJson: best.obj,
+      endpointUrl: "evidence_json",
+      attempts: [],
+      payload: null
+    }
+  };
+}
+
+function buildPassPlan({ settings, field, fieldEvidence }) {
+  const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
+  const useAiModePass = isBrightDataAiMode(settings);
+  const aioEvidence = buildEvidenceForPass(fieldEvidence, "aio");
+  const organicEvidence = buildEvidenceForPass(fieldEvidence, "organic");
+  const aiAnswerEvidence = buildEvidenceForPass(fieldEvidence, "ai_answer");
+  const aiHtmlEvidence = buildEvidenceForPass(fieldEvidence, "ai_html");
+  let passPlan = [{ name: "organic", evidence: organicEvidence }];
+  if (useTwoPass && aioEvidence.length) {
+    passPlan = [
+      { name: "aio", evidence: aioEvidence },
+      { name: "organic", evidence: organicEvidence }
+    ];
+  } else if (useAiModePass) {
+    passPlan = [
+      { name: "ai_answer", evidence: aiAnswerEvidence.length ? aiAnswerEvidence : fieldEvidence },
+      { name: "ai_html", evidence: aiHtmlEvidence.length ? aiHtmlEvidence : fieldEvidence }
+    ];
+  }
+  if (field.useEvidenceJsonResult === true) {
+    passPlan = [{ name: "evidence_json", evidence: fieldEvidence }, ...passPlan];
+  }
+  return passPlan;
+}
+
 async function runFieldExtractionPass({
   settings,
   input,
@@ -558,43 +787,37 @@ export async function runEnrichment(input, settings, options = {}) {
         { stage: "field_model", field: field.key, index: fieldIndex + 1, total: totalFields }
       );
       const threshold = getFieldThreshold(field, settings);
-      const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
-      const useAiModePass = isBrightDataAiMode(settings);
-      const aioEvidence = buildEvidenceForPass(fieldEvidence, "aio");
-      const organicEvidence = buildEvidenceForPass(fieldEvidence, "organic");
-      const aiAnswerEvidence = buildEvidenceForPass(fieldEvidence, "ai_answer");
-      const aiHtmlEvidence = buildEvidenceForPass(fieldEvidence, "ai_html");
-      let passPlan = [{ name: "organic", evidence: organicEvidence }];
-      if (useTwoPass && aioEvidence.length) {
-        passPlan = [
-          { name: "aio", evidence: aioEvidence },
-          { name: "organic", evidence: organicEvidence }
-        ];
-      } else if (useAiModePass) {
-        passPlan = [
-          { name: "ai_answer", evidence: aiAnswerEvidence.length ? aiAnswerEvidence : fieldEvidence },
-          { name: "ai_html", evidence: aiHtmlEvidence.length ? aiHtmlEvidence : fieldEvidence }
-        ];
-      }
+      const passPlan = buildPassPlan({ settings, field, fieldEvidence });
 
       const passDebug = [];
       let selectedPass = null;
       for (const pass of passPlan) {
         emitProgress(
           options,
-          `Field ${fieldIndex + 1}/${totalFields}: qwen pass=${pass.name} for ${field.key}`,
+          `Field ${fieldIndex + 1}/${totalFields}: ${
+            pass.name === "evidence_json" ? "evidence-json" : "qwen"
+          } pass=${pass.name} for ${field.key}`,
           Math.min(96, fieldStartProgress + 8),
           { stage: "field_model_pass", field: field.key, pass: pass.name }
         );
-        const passResult = await runFieldExtractionPass({
-          settings,
-          input: cleanInput,
-          field,
-          fieldValues: priorFieldValues,
-          evidenceForPrompt: pass.evidence.length ? pass.evidence : fieldEvidence,
-          threshold,
-          passName: pass.name
-        });
+        const evidenceForPrompt = pass.evidence.length ? pass.evidence : fieldEvidence;
+        const passResult =
+          pass.name === "evidence_json"
+            ? runEvidenceJsonExtractionPass({
+                field,
+                evidenceForPrompt,
+                threshold,
+                passName: pass.name
+              })
+            : await runFieldExtractionPass({
+                settings,
+                input: cleanInput,
+                field,
+                fieldValues: priorFieldValues,
+                evidenceForPrompt,
+                threshold,
+                passName: pass.name
+              });
         passDebug.push(passResult);
         selectedPass = passResult;
         emitProgress(
@@ -799,6 +1022,7 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
       key: String(field || "field").trim(),
       label: String(field || "field").trim(),
       enabled: true,
+      useEvidenceJsonResult: false,
       queryTemplates: "{{company}} {{city}} {{state}}",
       promptTemplate: "",
       confidenceThreshold: Number(settings.confidenceThreshold ?? 0.75),
@@ -837,37 +1061,33 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
       const priorFieldEvidence = buildFieldSpecificEvidence(priorEvidence, priorField.key);
       priorFieldEvidenceByKey[priorField.key] = priorFieldEvidence;
       const priorThreshold = getFieldThreshold(priorField, settings);
-      const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
-      const useAiModePass = isBrightDataAiMode(settings);
-      const priorAioEvidence = buildEvidenceForPass(priorFieldEvidence, "aio");
-      const priorOrganicEvidence = buildEvidenceForPass(priorFieldEvidence, "organic");
-      const priorAiAnswerEvidence = buildEvidenceForPass(priorFieldEvidence, "ai_answer");
-      const priorAiHtmlEvidence = buildEvidenceForPass(priorFieldEvidence, "ai_html");
-      let priorPassPlan = [{ name: "organic", evidence: priorOrganicEvidence }];
-      if (useTwoPass && priorAioEvidence.length) {
-        priorPassPlan = [
-          { name: "aio", evidence: priorAioEvidence },
-          { name: "organic", evidence: priorOrganicEvidence }
-        ];
-      } else if (useAiModePass) {
-        priorPassPlan = [
-          { name: "ai_answer", evidence: priorAiAnswerEvidence.length ? priorAiAnswerEvidence : priorFieldEvidence },
-          { name: "ai_html", evidence: priorAiHtmlEvidence.length ? priorAiHtmlEvidence : priorFieldEvidence }
-        ];
-      }
+      const priorPassPlan = buildPassPlan({
+        settings,
+        field: priorField,
+        fieldEvidence: priorFieldEvidence
+      });
 
       let priorSelected = null;
       const priorPassDebug = [];
       for (const pass of priorPassPlan) {
-        const passResult = await runFieldExtractionPass({
-          settings,
-          input: cleanInput,
-          field: priorField,
-          fieldValues: priorFieldValues,
-          evidenceForPrompt: pass.evidence.length ? pass.evidence : priorFieldEvidence,
-          threshold: priorThreshold,
-          passName: pass.name
-        });
+        const evidenceForPrompt = pass.evidence.length ? pass.evidence : priorFieldEvidence;
+        const passResult =
+          pass.name === "evidence_json"
+            ? runEvidenceJsonExtractionPass({
+                field: priorField,
+                evidenceForPrompt,
+                threshold: priorThreshold,
+                passName: pass.name
+              })
+            : await runFieldExtractionPass({
+                settings,
+                input: cleanInput,
+                field: priorField,
+                fieldValues: priorFieldValues,
+                evidenceForPrompt,
+                threshold: priorThreshold,
+                passName: pass.name
+              });
         priorPassDebug.push(passResult);
         priorSelected = passResult;
         if (!passResult.shouldRetry) break;
@@ -958,38 +1178,36 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
     );
   }
   const threshold = getFieldThreshold(selectedField, settings);
-  const useTwoPass = shouldUseBrightDataAioTwoPass(settings);
-  const useAiModePass = isBrightDataAiMode(settings);
-  const aioEvidence = buildEvidenceForPass(fieldEvidence, "aio");
-  const organicEvidence = buildEvidenceForPass(fieldEvidence, "organic");
-  const aiAnswerEvidence = buildEvidenceForPass(fieldEvidence, "ai_answer");
-  const aiHtmlEvidence = buildEvidenceForPass(fieldEvidence, "ai_html");
-  let passPlan = [{ name: "organic", evidence: organicEvidence }];
-  if (useTwoPass && aioEvidence.length) {
-    passPlan = [
-      { name: "aio", evidence: aioEvidence },
-      { name: "organic", evidence: organicEvidence }
-    ];
-  } else if (useAiModePass) {
-    passPlan = [
-      { name: "ai_answer", evidence: aiAnswerEvidence.length ? aiAnswerEvidence : fieldEvidence },
-      { name: "ai_html", evidence: aiHtmlEvidence.length ? aiHtmlEvidence : fieldEvidence }
-    ];
-  }
+  const passPlan = buildPassPlan({ settings, field: selectedField, fieldEvidence });
 
   let selectedPass = null;
   const passDebug = [];
   for (const pass of passPlan) {
-    if (onProgress) onProgress(`Sending prompt to Qwen (pass=${pass.name})`);
-    const passResult = await runFieldExtractionPass({
-      settings,
-      input: cleanInput,
-      field: selectedField,
-      fieldValues: priorFieldValues,
-      evidenceForPrompt: pass.evidence.length ? pass.evidence : fieldEvidence,
-      threshold,
-      passName: pass.name
-    });
+    if (onProgress) {
+      onProgress(
+        pass.name === "evidence_json"
+          ? `Trying evidence JSON direct extraction (pass=${pass.name})`
+          : `Sending prompt to Qwen (pass=${pass.name})`
+      );
+    }
+    const evidenceForPrompt = pass.evidence.length ? pass.evidence : fieldEvidence;
+    const passResult =
+      pass.name === "evidence_json"
+        ? runEvidenceJsonExtractionPass({
+            field: selectedField,
+            evidenceForPrompt,
+            threshold,
+            passName: pass.name
+          })
+        : await runFieldExtractionPass({
+            settings,
+            input: cleanInput,
+            field: selectedField,
+            fieldValues: priorFieldValues,
+            evidenceForPrompt,
+            threshold,
+            passName: pass.name
+          });
     passDebug.push(passResult);
     selectedPass = passResult;
     if (onProgress) {

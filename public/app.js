@@ -119,6 +119,7 @@ function makeNewField() {
     label: `Field ${idx}`,
     enabled: true,
     evidenceSourceField: null,
+    useEvidenceJsonResult: false,
     queryTemplates: "{{company}} {{city}} {{state}}",
     promptTemplate:
       "Find ${field.label} from provided search evidence only.\\n\\nInput:\\nCompany: ${input.company}\\nCity: ${input.city}\\nState: ${input.state}\\nWebsite: ${input.website}\\n\\nRules:\\n- Return ONLY valid JSON. No markdown.\\n- Do not guess.\\n- Use null when unknown.\\n\\nEvidence:\\n${evidenceLines}\\n\\nReturn exactly:\\n{\\n  \\\"field_name\\\": null,\\n  \\\"field_name_confidence\\\": 0\\n}",
@@ -248,6 +249,7 @@ function syncFieldStateFromDom() {
       label,
       enabled: Boolean(read("enabled")?.checked),
       evidenceSourceField: String(read("evidenceSourceField")?.value || "").trim() || null,
+      useEvidenceJsonResult: Boolean(read("useEvidenceJsonResult")?.checked),
       queryTemplates: read("queryTemplates")?.value || "",
       promptTemplate: read("promptTemplate")?.value || "",
       confidenceThreshold: confidenceRaw === "" ? null : Number(confidenceRaw),
@@ -310,6 +312,10 @@ function renderEnrichmentFields() {
             <label class="checkbox-row">
               <input data-prop="enabled" type="checkbox" ${field.enabled !== false ? "checked" : ""} />
               Enabled
+            </label>
+            <label class="checkbox-row">
+              <input data-prop="useEvidenceJsonResult" type="checkbox" ${field.useEvidenceJsonResult ? "checked" : ""} />
+              Use Evidence as Result if JSON
             </label>
             <label>
               Use Evidence From Field
