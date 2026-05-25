@@ -580,7 +580,7 @@ function renderRuns(runs = []) {
     return;
   }
 
-  const extractAiAnswerFromRun = (run) => {
+  const extractAiAnswerInfoFromRun = (run) => {
     const evidences = Array.isArray(run?.evidences) ? run.evidences : [];
     for (const ev of evidences) {
       const snippet = String(ev?.snippet || "");
@@ -591,17 +591,31 @@ function renderRuns(runs = []) {
       for (const re of patterns) {
         const m = snippet.match(re);
         const val = String(m?.[1] || "").trim();
-        if (val) return val;
+        if (val) return { kind: "answer", text: val };
       }
     }
-    return "";
+
+    const runError = String(run?.errorMessage || "").trim();
+    if (runError) return { kind: "error", text: runError };
+
+    for (const ev of evidences) {
+      const snippet = String(ev?.snippet || "");
+      const m = snippet.match(/Source failed:\s*([\s\S]*)$/i);
+      const err = String(m?.[1] || "").trim();
+      if (err) return { kind: "error", text: err };
+    }
+
+    return { kind: "none", text: "" };
   };
 
   runsBody.innerHTML = runs
     .map((run) => {
       const business = `${run.company}, ${run.city}, ${run.state}`;
-      const aiAnswerFull = extractAiAnswerFromRun(run);
-      const aiAnswerShort = aiAnswerFull ? `${aiAnswerFull.slice(0, 100)}${aiAnswerFull.length > 100 ? "..." : ""}` : "-";
+      const aiInfo = extractAiAnswerInfoFromRun(run);
+      const aiAnswerFull = aiInfo.text;
+      const aiAnswerShort = aiAnswerFull
+        ? `${aiAnswerFull.slice(0, 100)}${aiAnswerFull.length > 100 ? "..." : ""}`
+        : "-";
       return `
         <tr>
           <td>${run.id}</td>
@@ -609,7 +623,9 @@ function renderRuns(runs = []) {
           <td>${run.status}</td>
           <td>${
             aiAnswerFull
-              ? `<button type="button" class="ghost view-ai-answer-btn" data-ai-answer="${escapeHtml(aiAnswerFull)}">${escapeHtml(
+              ? `<button type="button" class="ghost view-ai-answer-btn" data-ai-answer="${escapeHtml(
+                  aiAnswerFull
+                )}" data-ai-kind="${escapeHtml(aiInfo.kind)}">${escapeHtml(
                   aiAnswerShort
                 )}</button>`
               : "-"
@@ -626,7 +642,8 @@ runsBody?.addEventListener("click", (event) => {
   const btn = event.target.closest(".view-ai-answer-btn");
   if (!btn) return;
   const text = String(btn.getAttribute("data-ai-answer") || "");
-  aiAnswerModalText.textContent = text;
+  const kind = String(btn.getAttribute("data-ai-kind") || "answer");
+  aiAnswerModalText.textContent = kind === "error" ? `API/Source Error:\n${text}` : text;
   aiAnswerModal?.classList.remove("hidden");
 });
 
