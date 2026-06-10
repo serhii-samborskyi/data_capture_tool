@@ -91,6 +91,7 @@ export function getDefaultEnrichmentFields() {
       label: "Owner First Name",
       enabled: true,
       evidenceSourceField: null,
+      qwenInputOnly: false,
       useEvidenceJsonResult: false,
       skipQwenFallback: false,
       queryTemplates:
@@ -104,6 +105,7 @@ export function getDefaultEnrichmentFields() {
       label: "Closest Competitor",
       enabled: true,
       evidenceSourceField: null,
+      qwenInputOnly: false,
       useEvidenceJsonResult: false,
       skipQwenFallback: false,
       queryTemplates:
@@ -117,6 +119,7 @@ export function getDefaultEnrichmentFields() {
       label: "Top Service",
       enabled: true,
       evidenceSourceField: null,
+      qwenInputOnly: false,
       useEvidenceJsonResult: false,
       skipQwenFallback: false,
       queryTemplates:
@@ -149,6 +152,7 @@ export function normalizeEnrichmentFields(rawFields, fallbackFields = []) {
         if (!normalized || normalized === key) return null;
         return normalized;
       })(),
+      qwenInputOnly: row.qwenInputOnly === true,
       useEvidenceJsonResult: row.useEvidenceJsonResult === true,
       skipQwenFallback: row.skipQwenFallback === true,
       queryTemplates: normalizeString(row.queryTemplates),

@@ -122,6 +122,7 @@ function makeNewField() {
     label: `Field ${idx}`,
     enabled: true,
     evidenceSourceField: null,
+    qwenInputOnly: false,
     useEvidenceJsonResult: false,
     skipQwenFallback: false,
     queryTemplates: "{{company}} {{city}} {{state}}",
@@ -253,6 +254,7 @@ function syncFieldStateFromDom() {
       label,
       enabled: Boolean(read("enabled")?.checked),
       evidenceSourceField: String(read("evidenceSourceField")?.value || "").trim() || null,
+      qwenInputOnly: Boolean(read("qwenInputOnly")?.checked),
       useEvidenceJsonResult: Boolean(read("useEvidenceJsonResult")?.checked),
       skipQwenFallback:
         Boolean(read("useEvidenceJsonResult")?.checked) &&
@@ -289,6 +291,11 @@ function renderEnrichmentFields() {
       ].join("");
       const usesSharedEvidence = Boolean(field.evidenceSourceField);
       const skipFallbackDisabled = !field.useEvidenceJsonResult;
+      const queryTemplatesNote = field.qwenInputOnly
+        ? "(ignored in Qwen input-only mode)"
+        : usesSharedEvidence
+        ? "(ignored while reusing evidence)"
+        : "";
       return `
       <details class="field-card" data-field-index="${idx}">
         <summary class="field-card-summary">
@@ -322,6 +329,10 @@ function renderEnrichmentFields() {
               Enabled
             </label>
             <label class="checkbox-row">
+              <input data-prop="qwenInputOnly" type="checkbox" ${field.qwenInputOnly ? "checked" : ""} />
+              Qwen Input Only
+            </label>
+            <label class="checkbox-row">
               <input data-prop="useEvidenceJsonResult" type="checkbox" ${field.useEvidenceJsonResult ? "checked" : ""} />
               Use Evidence as Result if JSON
             </label>
@@ -337,7 +348,7 @@ function renderEnrichmentFields() {
             </label>
           </div>
           <label>
-            Query Templates (one per line) ${usesSharedEvidence ? "(ignored while reusing evidence)" : ""}
+            Query Templates (one per line) ${queryTemplatesNote}
             <textarea data-prop="queryTemplates" rows="3">${escapeHtml(field.queryTemplates || "")}</textarea>
           </label>
           <label>

@@ -183,6 +183,26 @@ function buildFieldSpecificEvidence(evidence, fieldKey) {
   return [...specific, ...shared].slice(0, 8);
 }
 
+function buildInputOnlyEvidence(input, field) {
+  const inputJson = JSON.stringify(input || {}, null, 2);
+  return [
+    {
+      sourceType: "input_only",
+      field: field.key,
+      query: null,
+      queryTemplate: null,
+      url: "input://request",
+      snippet: `Request input JSON:\n${inputJson}`,
+      debug: {
+        provider: "input",
+        mode: "qwen_input_only",
+        rawResponsePreview: inputJson,
+        topLinks: []
+      }
+    }
+  ];
+}
+
 function resolveEvidenceSourceFieldKey(field) {
   const raw = normalizeString(field?.evidenceSourceField);
   if (!raw) return null;
@@ -729,6 +749,7 @@ export async function runEnrichment(input, settings, options = {}) {
       const fieldTemplateVars = buildFieldTemplateVars(cleanInput, priorFieldValues);
       const useAiMode = isBrightDataAiMode(settings);
       const evidenceSourceFieldKey = resolveEvidenceSourceFieldKey(field);
+      const qwenInputOnly = field.qwenInputOnly === true;
 
       const profilePlans = buildPlansFromTemplateText({
         input: cleanInput,
@@ -746,7 +767,15 @@ export async function runEnrichment(input, settings, options = {}) {
       });
 
       let fieldEvidence = null;
-      if (evidenceSourceFieldKey && Array.isArray(fieldEvidenceByKey[evidenceSourceFieldKey])) {
+      if (qwenInputOnly) {
+        fieldEvidence = buildInputOnlyEvidence(cleanInput, field);
+        emitProgress(
+          options,
+          `Field ${fieldIndex + 1}/${totalFields}: using request input only for ${field.key}`,
+          Math.min(95, fieldStartProgress + 2),
+          { stage: "field_input_only", field: field.key }
+        );
+      } else if (evidenceSourceFieldKey && Array.isArray(fieldEvidenceByKey[evidenceSourceFieldKey])) {
         fieldEvidence = fieldEvidenceByKey[evidenceSourceFieldKey];
         emitProgress(
           options,
@@ -1026,6 +1055,7 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
       key: String(field || "field").trim(),
       label: String(field || "field").trim(),
       enabled: true,
+      qwenInputOnly: false,
       useEvidenceJsonResult: false,
       skipQwenFallback: false,
       queryTemplates: "{{company}} {{city}} {{state}}",
@@ -1059,11 +1089,16 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
       const priorPlans = useAiMode ? [...priorFieldPlans] : [...priorProfilePlans, ...priorFieldPlans];
 
       if (onProgress) onProgress(`Resolving prior field dependency: ${priorField.key}`);
-      const priorEvidence = await collectEvidence(cleanInput, settings, {
-        planOverride: priorPlans,
-        onProgress
-      });
-      const priorFieldEvidence = buildFieldSpecificEvidence(priorEvidence, priorField.key);
+      let priorFieldEvidence = null;
+      if (priorField.qwenInputOnly === true) {
+        priorFieldEvidence = buildInputOnlyEvidence(cleanInput, priorField);
+      } else {
+        const priorEvidence = await collectEvidence(cleanInput, settings, {
+          planOverride: priorPlans,
+          onProgress
+        });
+        priorFieldEvidence = buildFieldSpecificEvidence(priorEvidence, priorField.key);
+      }
       priorFieldEvidenceByKey[priorField.key] = priorFieldEvidence;
       const priorThreshold = getFieldThreshold(priorField, settings);
       const priorPassPlan = buildPassPlan({
@@ -1126,7 +1161,12 @@ export async function runFieldProbe({ input, settings, field, queryTemplate, onP
   const evidenceSourceFieldKey = resolveEvidenceSourceFieldKey(selectedField);
   let planOverride = [];
   let fieldEvidence = null;
-  if (!queryTemplate && evidenceSourceFieldKey && Array.isArray(priorFieldEvidenceByKey[evidenceSourceFieldKey])) {
+  if (!queryTemplate && selectedField.qwenInputOnly === true) {
+    fieldEvidence = buildInputOnlyEvidence(cleanInput, selectedField);
+    if (onProgress) {
+      onProgress(`Using request input only for ${selectedField.key}`);
+    }
+  } else if (!queryTemplate && evidenceSourceFieldKey && Array.isArray(priorFieldEvidenceByKey[evidenceSourceFieldKey])) {
     fieldEvidence = priorFieldEvidenceByKey[evidenceSourceFieldKey];
     if (onProgress) {
       onProgress(
