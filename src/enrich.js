@@ -9,11 +9,17 @@ function normalizeString(value) {
   return trimmed.length ? trimmed : null;
 }
 
-function stableCacheKey(input) {
-  return Object.keys(input)
+function stableCacheKey(input, fieldKeys = []) {
+  const inputKey = Object.keys(input)
     .sort()
     .map((key) => `${key}:${String(input[key] || "").trim().toLowerCase()}`)
     .join("||");
+  const fieldsKey = fieldKeys
+    .map((key) => String(key || "").trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join(",");
+  return `${inputKey}||fields:${fieldsKey}`;
 }
 
 function shorten(text, maxLen = 1300) {
@@ -656,10 +662,30 @@ export async function runEnrichment(input, settings, options = {}) {
   cleanInput.state = String(cleanInput.state || "").trim();
   cleanInput.website = normalizeString(cleanInput.website);
 
-  const fields = migrateLegacyFields(settings).filter((field) => field.enabled);
+  const enabledFields = migrateLegacyFields(settings).filter((field) => field.enabled);
+  const requestedFieldKeys = Array.isArray(options.requestedFieldKeys)
+    ? [...new Set(options.requestedFieldKeys.map((key) => String(key || "").trim()).filter(Boolean))]
+    : null;
+  const enabledByKey = new Map(enabledFields.map((field) => [field.key, field]));
+  const requestedFieldKeySet = requestedFieldKeys ? new Set(requestedFieldKeys) : null;
+  const fields = requestedFieldKeySet
+    ? enabledFields.filter((field) => requestedFieldKeySet.has(field.key))
+    : enabledFields;
+  if (requestedFieldKeys) {
+    const missing = requestedFieldKeys.filter((key) => !enabledByKey.has(key));
+    if (missing.length) {
+      throw new Error(`Invalid enrichment fields: ${missing.join(", ")}`);
+    }
+    if (!fields.length) {
+      throw new Error("No enrichment fields requested");
+    }
+  } else if (!fields.length) {
+    throw new Error("No enabled enrichment fields configured");
+  }
   const nullResult = buildNullResultFromFields(fields);
 
-  const cacheKey = stableCacheKey(cleanInput);
+  const selectedFieldKeys = fields.map((field) => field.key);
+  const cacheKey = stableCacheKey(cleanInput, selectedFieldKeys);
   const cached = await findCachedRun(cacheKey, settings);
   if (cached) {
     emitProgress(options, "Cache hit. Returning cached result.", 100, { stage: "cache" });

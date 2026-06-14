@@ -36,11 +36,13 @@ Prototype REST API + UI to enrich local business data using:
   "company": "Acme Plumbing",
   "city": "Austin",
   "state": "TX",
-  "website": "https://acmeplumbing.example"
+  "website": "https://acmeplumbing.example",
+  "enrichment_fields": ["owner_name", "top_service"]
 }
 ```
 
 `custom_1` is also accepted as an alias for `state`.
+`enrichment_fields` is optional. When provided, only those enabled enrichment fields are run. When omitted, all enabled enrichment fields are run.
 
 ## Output schema (`POST /api/enrich`)
 ```json

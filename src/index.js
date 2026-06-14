@@ -12,7 +12,7 @@ import { getSettings, updateSettings } from "./settings.js";
 import { runEnrichment, runFieldProbe } from "./enrich.js";
 import { browserManager } from "./browserManager.js";
 import { runModelCompatibilityTest, fetchOllamaModelTags } from "./model.js";
-import { migrateLegacyFields } from "./enrichmentFields.js";
+import { migrateLegacyFields, normalizeFieldKey } from "./enrichmentFields.js";
 import { migrateInputFields } from "./inputFields.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -152,6 +152,22 @@ function validateRequiredInput(input, settings) {
   throw new Error(`Missing required input fields: ${label}`);
 }
 
+function parseRequestedEnrichmentFieldKeys(body) {
+  const raw =
+    body?.enrichment_fields !== undefined
+      ? body.enrichment_fields
+      : body?.enrichmentFields !== undefined
+        ? body.enrichmentFields
+        : body?.fields;
+  if (raw === undefined) return null;
+
+  const values = Array.isArray(raw) ? raw : String(raw || "").split(",");
+  const keys = values
+    .map((value) => normalizeFieldKey(value, ""))
+    .filter(Boolean);
+  return [...new Set(keys)];
+}
+
 function isTimeoutLikeError(error) {
   const message = String(error?.message || error || "").toLowerCase();
   return (
@@ -175,7 +191,14 @@ function inferErrorSource(error) {
   const attempts = Array.isArray(error?.attempts) ? error.attempts : [];
   const attemptUrls = attempts.map((item) => String(item?.url || "").toLowerCase());
 
-  if (lower.startsWith("missing required input fields:")) return "validation";
+  if (
+    lower.startsWith("missing required input fields:") ||
+    lower.startsWith("invalid enrichment fields:") ||
+    lower.startsWith("no enrichment fields requested") ||
+    lower.startsWith("no enabled enrichment fields configured")
+  ) {
+    return "validation";
+  }
   if (lower.includes("bright data") || lower.includes("brightdata")) return "brightdata";
   if (
     attemptUrls.some(
@@ -197,7 +220,14 @@ function inferErrorType(error) {
   const lower = message.toLowerCase();
   const upstreamStatus = parseHttpStatusFromText(message);
 
-  if (lower.startsWith("missing required input fields:")) return "validation_error";
+  if (
+    lower.startsWith("missing required input fields:") ||
+    lower.startsWith("invalid enrichment fields:") ||
+    lower.startsWith("no enrichment fields requested") ||
+    lower.startsWith("no enabled enrichment fields configured")
+  ) {
+    return "validation_error";
+  }
   if (isTimeoutLikeError(error)) return "upstream_timeout";
   if (upstreamStatus) return `upstream_http_${upstreamStatus}`;
   if (lower.includes("json")) return "model_parse_error";
@@ -218,7 +248,12 @@ function buildErrorMeta(error) {
 function mapEnrichmentErrorToHttp(error) {
   const message = String(error?.message || error || "Unknown error");
   const meta = buildErrorMeta(error);
-  if (message.startsWith("Missing required input fields:")) {
+  if (
+    message.startsWith("Missing required input fields:") ||
+    message.startsWith("Invalid enrichment fields:") ||
+    message.startsWith("No enrichment fields requested") ||
+    message.startsWith("No enabled enrichment fields configured")
+  ) {
     return { status: 400, body: { ok: false, error: message, ...meta } };
   }
   if (isTimeoutLikeError(error)) {
@@ -508,6 +543,11 @@ function buildOpenApiDocument({ settings, req }) {
       description: field.label || field.key
     };
   }
+  requestProperties.enrichment_fields = {
+    type: "array",
+    items: { type: "string" },
+    description: "Optional list of enabled enrichment field keys to run. Omit to run all enabled enrichment fields."
+  };
 
   const responseProperties = {};
   for (const field of schema.enrichmentFields) {
@@ -711,13 +751,15 @@ app.post("/api/enrich", async (req, res) => {
   const startedAt = Date.now();
   let settings = null;
   let input = null;
+  let requestedFieldKeys = null;
   try {
     const parsed = enrichInputSchema.parse(req.body || {});
     settings = await getSettings();
     input = normalizeInput(parsed, settings);
+    requestedFieldKeys = parseRequestedEnrichmentFieldKeys(parsed);
     validateRequiredInput(input, settings);
 
-    const data = await runEnrichment(input, settings, { includeDebug: true });
+    const data = await runEnrichment(input, settings, { includeDebug: true, requestedFieldKeys });
     await appendEnrichmentApiLog({
       requestId,
       ts: new Date().toISOString(),
@@ -727,6 +769,7 @@ app.post("/api/enrich", async (req, res) => {
       durationMs: Date.now() - startedAt,
       mode: String(settings.brightDataSerpMode || "request"),
       input,
+      requestedFieldKeys,
       evidence: summarizeEvidenceForApiLog(data.debug),
       qwen: summarizeQwenForApiLog(data.debug, data.result),
       includeDebug: false
@@ -744,6 +787,7 @@ app.post("/api/enrich", async (req, res) => {
       durationMs: Date.now() - startedAt,
       mode: settings ? String(settings.brightDataSerpMode || "request") : null,
       input,
+      requestedFieldKeys,
       error: mapped.body
     });
     res.status(mapped.status).json(mapped.body);
@@ -755,13 +799,15 @@ app.post("/api/enrich-debug", async (req, res) => {
   const startedAt = Date.now();
   let settings = null;
   let input = null;
+  let requestedFieldKeys = null;
   try {
     const parsed = enrichInputSchema.parse(req.body || {});
     settings = await getSettings();
     input = normalizeInput(parsed, settings);
+    requestedFieldKeys = parseRequestedEnrichmentFieldKeys(parsed);
     validateRequiredInput(input, settings);
 
-    const data = await runEnrichment(input, settings, { includeDebug: true });
+    const data = await runEnrichment(input, settings, { includeDebug: true, requestedFieldKeys });
     await appendEnrichmentApiLog({
       requestId,
       ts: new Date().toISOString(),
@@ -771,6 +817,7 @@ app.post("/api/enrich-debug", async (req, res) => {
       durationMs: Date.now() - startedAt,
       mode: String(settings.brightDataSerpMode || "request"),
       input,
+      requestedFieldKeys,
       evidence: summarizeEvidenceForApiLog(data.debug),
       qwen: summarizeQwenForApiLog(data.debug, data.result),
       includeDebug: true
@@ -787,6 +834,7 @@ app.post("/api/enrich-debug", async (req, res) => {
       durationMs: Date.now() - startedAt,
       mode: settings ? String(settings.brightDataSerpMode || "request") : null,
       input,
+      requestedFieldKeys,
       error: mapped.body
     });
     res.status(mapped.status).json(mapped.body);
@@ -798,10 +846,12 @@ app.post("/api/enrich-debug/start", async (req, res) => {
   const startedAt = Date.now();
   let settings = null;
   let input = null;
+  let requestedFieldKeys = null;
   try {
     const parsed = enrichInputSchema.parse(req.body || {});
     settings = await getSettings();
     input = normalizeInput(parsed, settings);
+    requestedFieldKeys = parseRequestedEnrichmentFieldKeys(parsed);
     validateRequiredInput(input, settings);
     const jobId = makeJobId();
 
@@ -822,6 +872,7 @@ app.post("/api/enrich-debug/start", async (req, res) => {
       try {
         const data = await runEnrichment(input, settings, {
           includeDebug: true,
+          requestedFieldKeys,
           onProgress: (event) => {
             if (typeof event === "string") {
               pushJobLog(job, event);
@@ -846,6 +897,7 @@ app.post("/api/enrich-debug/start", async (req, res) => {
           durationMs: Date.now() - startedAt,
           mode: String(settings.brightDataSerpMode || "request"),
           input,
+          requestedFieldKeys,
           jobId,
           evidence: summarizeEvidenceForApiLog(data.debug),
           qwen: summarizeQwenForApiLog(data.debug, data.result),
@@ -865,6 +917,7 @@ app.post("/api/enrich-debug/start", async (req, res) => {
           durationMs: Date.now() - startedAt,
           mode: settings ? String(settings.brightDataSerpMode || "request") : null,
           input,
+          requestedFieldKeys,
           jobId,
           includeDebug: true,
           error: mapped.body
@@ -1129,24 +1182,26 @@ app.get("/api/public/docs", async (req, res) => {
         .join("")}
     </tbody>
   </table>
-  <h2>Enrichment Output Fields</h2>
-  <table>
+	  <h2>Enrichment Output Fields</h2>
+	  <table>
     <thead><tr><th>Key</th><th>Label</th></tr></thead>
     <tbody>
       ${schema.enrichmentFields
         .map((f) => `<tr><td><code>${f.key}</code></td><td>${f.label || f.key}</td></tr>`)
         .join("")}
     </tbody>
-  </table>
-  <h2>Example Request</h2>
-  <pre>{
-  ${schema.inputFields.map((f) => `"${f.key}": ""`).join(",\n  ")}
+	  </table>
+	  <h2>Example Request</h2>
+	  <pre>{
+  ${schema.inputFields.map((f) => `"${f.key}": ""`).join(",\n  ")},
+  "enrichment_fields": ["${schema.enrichmentFields[0]?.key || "owner_name"}"]
 }</pre>
-  <h2>Example cURL</h2>
-  <pre>curl -X POST '${req.protocol}://${req.get("host")}/api/public/enrich' \\
-  -H 'Content-Type: application/json' \\
-  -H 'x-api-key: YOUR_API_KEY' \\
-  -d '{"${schema.inputFields[0]?.key || "company"}":"Example"}'</pre>
+	  <p><code>enrichment_fields</code> is optional. Omit it to run all enabled enrichment fields.</p>
+	  <h2>Example cURL</h2>
+	  <pre>curl -X POST '${req.protocol}://${req.get("host")}/api/public/enrich' \\
+	  -H 'Content-Type: application/json' \\
+	  -H 'x-api-key: YOUR_API_KEY' \\
+	  -d '{"${schema.inputFields[0]?.key || "company"}":"Example","enrichment_fields":["${schema.enrichmentFields[0]?.key || "owner_name"}"]}'</pre>
 </body>
 </html>`;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -1176,15 +1231,17 @@ app.post("/api/public/enrich", requirePublicApiKey, async (req, res) => {
   let input = null;
   let settings = null;
   let includeDebug = false;
+  let requestedFieldKeys = null;
   try {
     settings = req.publicApiSettings || (await getSettings());
     input = normalizeInput(req.body || {}, settings);
+    requestedFieldKeys = parseRequestedEnrichmentFieldKeys(req.body || {});
     validateRequiredInput(input, settings);
 
     includeDebug =
       String(req.query.include_debug || "").toLowerCase() === "true" ||
       Boolean(req.body?.include_debug);
-    const data = await runEnrichment(input, settings, { includeDebug: true });
+    const data = await runEnrichment(input, settings, { includeDebug: true, requestedFieldKeys });
     await appendEnrichmentApiLog({
       requestId,
       ts: new Date().toISOString(),
@@ -1194,6 +1251,7 @@ app.post("/api/public/enrich", requirePublicApiKey, async (req, res) => {
       durationMs: Date.now() - startedAt,
       mode: String(settings.brightDataSerpMode || "request"),
       input,
+      requestedFieldKeys,
       evidence: summarizeEvidenceForApiLog(data.debug),
       qwen: summarizeQwenForApiLog(data.debug, data.result),
       includeDebug
@@ -1214,6 +1272,7 @@ app.post("/api/public/enrich", requirePublicApiKey, async (req, res) => {
       durationMs: Date.now() - startedAt,
       mode: settings ? String(settings.brightDataSerpMode || "request") : null,
       input,
+      requestedFieldKeys,
       includeDebug,
       error: mapped.body
     });
