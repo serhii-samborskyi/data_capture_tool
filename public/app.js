@@ -133,6 +133,45 @@ function makeNewField() {
   };
 }
 
+function makeUniqueEnrichmentFieldKey(baseKey, currentIndex = -1) {
+  const existingKeys = new Set(
+    enrichmentFieldsState
+      .map((field, idx) => (idx === currentIndex ? "" : normalizeFieldKey(field.key, "")))
+      .filter(Boolean)
+  );
+  const base = normalizeFieldKey(baseKey, "field");
+  let candidate = `${base}_copy`;
+  let suffix = 2;
+  while (existingKeys.has(candidate)) {
+    candidate = `${base}_copy_${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function duplicateEnrichmentField(index) {
+  const source = enrichmentFieldsState[index];
+  if (!source) return;
+
+  const oldKey = normalizeFieldKey(source.key, `field_${index + 1}`);
+  const newKey = makeUniqueEnrichmentFieldKey(oldKey, index);
+  const oldConfidenceKey = `${oldKey}_confidence`;
+  const newConfidenceKey = `${newKey}_confidence`;
+  const promptTemplate = String(source.promptTemplate || "")
+    .split(oldConfidenceKey)
+    .join(newConfidenceKey)
+    .split(oldKey)
+    .join(newKey);
+
+  const duplicate = {
+    ...source,
+    key: newKey,
+    label: `${source.label || oldKey} Copy`,
+    promptTemplate
+  };
+  enrichmentFieldsState.splice(index + 1, 0, duplicate);
+}
+
 function syncInputValuesFromDom() {
   const next = {};
   const rows = Array.from(inputFieldsContainer.querySelectorAll("[data-input-key]"));
@@ -356,6 +395,7 @@ function renderEnrichmentFields() {
             <textarea data-prop="promptTemplate" rows="8">${escapeHtml(field.promptTemplate || "")}</textarea>
           </label>
           <div class="actions">
+            <button type="button" class="ghost" data-duplicate-field="${idx}">Duplicate</button>
             <button type="button" class="ghost" data-remove-field="${idx}">Remove</button>
           </div>
         </div>
@@ -952,6 +992,15 @@ addFieldBtn?.addEventListener("click", () => {
 });
 
 enrichmentFieldsList?.addEventListener("click", (event) => {
+  const duplicateButton = event.target.closest("[data-duplicate-field]");
+  if (duplicateButton) {
+    syncFieldStateFromDom();
+    const idx = Number(duplicateButton.getAttribute("data-duplicate-field"));
+    duplicateEnrichmentField(idx);
+    renderEnrichmentFields();
+    return;
+  }
+
   const button = event.target.closest("[data-remove-field]");
   if (!button) return;
 
